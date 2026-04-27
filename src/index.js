@@ -6,7 +6,12 @@ import {
   answerInteractiveQuestion,
   summarizeDailyAlertWithOpenAI
 } from './llm.js';
-import { formatPredictions, getFinalGameResults, getMlbPredictions } from './mlb.js';
+import {
+  formatPredictions,
+  getFinalGameResults,
+  getMlbPredictions,
+  getMlbScheduleChoices
+} from './mlb.js';
 import { Storage } from './storage.js';
 import { TelegramBot } from './telegram.js';
 import { dateInTimezone, isValidDateYmd, percent, timeInTimezone } from './utils.js';
@@ -14,7 +19,8 @@ import { dateInTimezone, isValidDateYmd, percent, timeInTimezone } from './utils
 const config = loadConfig();
 const storage = new Storage();
 let postGameCheckRunning = false;
-const PREDICT_CALLBACK_PREFIX = 'predict:';
+const PREDICT_CALLBACK_PREFIX = 'predict_live:';
+const LEGACY_PREDICT_CALLBACK_PREFIX = 'predict:';
 
 function helpText() {
   return [
@@ -140,8 +146,7 @@ function predictionKeyboard(dateYmd, games) {
 
 async function sendPredictionGameMenu(bot, chatId, dateYmd = '') {
   const targetDate = dateYmd || dateInTimezone(config.timezone);
-  const modelMemory = config.modelMemory ? storage.getMemory() : {};
-  const games = await getMlbPredictions(targetDate, modelMemory);
+  const games = await getMlbScheduleChoices(targetDate);
 
   if (games.length === 0) {
     await bot.sendMessage(
@@ -161,6 +166,7 @@ async function sendPredictionGameMenu(bot, chatId, dateYmd = '') {
     [
       '📊 Pilih game untuk MLB prediction:',
       `Tanggal: ${targetDate}`,
+      `Sumber: MLB StatsAPI live schedule (${games.length} game)`,
       '',
       'Tap salah satu matchup di bawah.'
     ].join('\n'),
@@ -696,6 +702,14 @@ async function handleCallbackQuery(bot, callbackQuery) {
   const data = callbackQuery.data || '';
   if (data.startsWith(PREDICT_CALLBACK_PREFIX)) {
     await handlePredictCallback(bot, callbackQuery);
+    return;
+  }
+
+  if (data.startsWith(LEGACY_PREDICT_CALLBACK_PREFIX)) {
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: 'Tombol ini dari menu lama. Kirim /predict lagi untuk live schedule.',
+      show_alert: true
+    });
     return;
   }
 

@@ -1233,6 +1233,32 @@ export async function getMlbPredictions(dateYmd = dateInTimezone('Asia/Jakarta')
   );
 }
 
+export async function getMlbScheduleChoices(dateYmd = dateInTimezone('Asia/Jakarta')) {
+  const games = await fetchSchedule(dateYmd);
+
+  return games.map((game) => ({
+    gamePk: game.gamePk,
+    status: game.status?.detailedState || 'Scheduled',
+    abstractGameState: game.status?.abstractGameState || '',
+    start: formatGameTime(game.gameDate),
+    venue: game.venue?.name || 'TBD',
+    away: {
+      id: game.teams.away.team.id,
+      name: game.teams.away.team.name,
+      abbreviation: game.teams.away.team.abbreviation
+    },
+    home: {
+      id: game.teams.home.team.id,
+      name: game.teams.home.team.name,
+      abbreviation: game.teams.home.team.abbreviation
+    },
+    probablePitchers: {
+      away: game.teams.away.probablePitcher?.fullName || 'TBD',
+      home: game.teams.home.probablePitcher?.fullName || 'TBD'
+    }
+  }));
+}
+
 export async function getFinalGameResults(dateYmd = dateInTimezone('Asia/Jakarta')) {
   const games = await fetchSchedule(dateYmd);
 
