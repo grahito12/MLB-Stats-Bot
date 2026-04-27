@@ -41,22 +41,24 @@ Data yang dianalisa:
 ## Fitur Utama
 
 - Telegram bot command-based dan chat interaktif.
-- Analyst Agent dengan playbook `mlb-analyst-v1.0`.
+- Analyst Agent dengan playbook `mlb-analyst-v1.1`.
 - Support OpenAI-compatible API key.
 - Support OpenRouter-style model seperti `openai/gpt-4o-mini`.
 - Auto-alert harian.
 - Post-game recap otomatis.
 - Memory learning untuk full-game pick dan YRFI/NRFI.
+- Python ML engine berbasis CSV lokal untuk Pythagorean, Log5, odds edge, dan model sklearn opsional.
 - Terminal hanya untuk log, bukan output utama.
 
 ## Requirements
 
 - Node.js `18.15+`
+- Python `3.10+` untuk ML engine opsional
 - Git
 - Telegram bot token dari `@BotFather`
 - OpenAI/OpenRouter API key jika ingin memakai Analyst Agent
 
-Tidak perlu install dependency tambahan karena bot memakai Node.js built-in `fetch`.
+Bot Telegram tidak perlu dependency tambahan karena memakai Node.js built-in `fetch`. Python ML engine memakai `requirements.txt` jika kamu ingin menjalankan training sklearn.
 
 ## Install Dari GitHub
 
@@ -216,6 +218,96 @@ npm run check
 ```
 
 Jika `PRINT_ALERT_TO_TERMINAL=false`, terminal hanya menampilkan log ringkas. Output utama dikirim ke Telegram.
+
+## Python ML Prediction Engine
+
+Selain bot Telegram, project ini punya engine Python lokal untuk eksperimen model MLB dari CSV.
+
+Install dependency Python:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Jalankan sample prediction:
+
+```bash
+python -m src.predict --home "Los Angeles Dodgers" --away "New York Yankees"
+```
+
+Dengan odds market:
+
+```bash
+python -m src.predict --home "Los Angeles Dodgers" --away "New York Yankees" --home-odds -120
+```
+
+Output berisi:
+
+```text
+Home Team: Los Angeles Dodgers
+Away Team: New York Yankees
+Predicted Winner: Los Angeles Dodgers
+Home Win Probability: 55.9%
+Away Win Probability: 44.1%
+Confidence: Medium
+Main Factors:
+- Better Log5/Pythagorean team-strength profile
+- Better starting pitcher advantage
+- Stronger bullpen profile
+```
+
+Model logic:
+
+- Pythagorean Win%: mengukur kekuatan tim dari run scored dan run allowed.
+- Log5: mengubah kekuatan dua tim menjadi probabilitas matchup.
+- Starting pitcher score: ERA, WHIP, FIP, dan K/BB.
+- Offense score: OPS, wRC+, dan runs per game.
+- Bullpen score: bullpen ERA, WHIP, dan recent usage.
+- Recent form: last 5-10 games dengan run differential.
+- Home field: edge kecil untuk home team.
+- Odds edge: model probability dikurangi implied probability market.
+
+Baseline weight:
+
+```text
+30% Log5 / Pythagorean team strength
+25% Starting pitcher strength
+20% Team offense
+10% Bullpen strength
+10% Recent form
+5% Home field advantage
+```
+
+Training ML opsional tersedia di `src/model.py` lewat `train_ml_models()`:
+
+```python
+from src.model import shift_rolling_averages, train_ml_models
+
+rows = [
+    {"team": "LAD", "date": "2025-04-01", "ops": 0.760, "home_win": 1},
+    {"team": "LAD", "date": "2025-04-02", "ops": 0.780, "home_win": 0},
+]
+safe_rows = shift_rolling_averages(rows, "team", "date", ["ops"], window=5)
+models = train_ml_models(safe_rows, ["ops_rolling_5"], "home_win")
+```
+
+`shift_rolling_averages()` sengaja memakai data sebelum tanggal game agar tidak terjadi data leakage.
+
+Sample CSV:
+
+```text
+data/sample_games.csv
+data/sample_team_stats.csv
+data/sample_pitcher_stats.csv
+```
+
+Test Python:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Catatan: ini bukan betting advice. MLB punya variance tinggi, dan probabilitas model bukan jaminan hasil.
 
 ## Command Telegram
 
@@ -419,8 +511,15 @@ src/llm.js            Analyst Agent local/external
 src/storage.js        Memory dan state
 src/telegram.js       Telegram Bot API wrapper
 src/analystSkill.js   Analyst playbook prompt
+src/features.py       Formula sabermetric Python
+src/model.py          Baseline prediction dan optional sklearn models
+src/predict.py        CLI Python prediction
+src/odds.py           Implied probability dan edge
+src/data_loader.py    Loader CSV lokal
 docs/analyst-playbook.md
 .env.example          Template konfigurasi
+requirements.txt      Dependency Python opsional
+tests/                Unit tests Python
 ```
 
 ## Data Sources
