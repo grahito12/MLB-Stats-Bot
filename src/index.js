@@ -285,6 +285,9 @@ function formatLivePrediction(dateYmd, prediction) {
   const firstPick = firstInning?.agent?.pick || firstInning?.baselinePick || 'NO';
   const firstProbability = firstInning?.agent?.probability ?? firstInning?.baselineProbability ?? 50;
   const firstLabel = firstPick === 'YES' ? 'YES / YRFI' : 'NO / NRFI';
+  const injuryLines = prediction.injuryDetailLines?.length
+    ? prediction.injuryDetailLines.map((line) => `• ${line}`)
+    : [`• ${prediction.injuryLine || 'Data injury tidak tersedia.'}`];
 
   return [
     '📊 MLB Prediction',
@@ -312,6 +315,9 @@ function formatLivePrediction(dateYmd, prediction) {
     '────────────',
     '🔥 Starting Pitcher',
     `${prediction.away.starterLine} vs ${prediction.home.starterLine}`,
+    '',
+    '🏥 Injury Report',
+    ...injuryLines,
     '',
     'ML Reference',
     prediction.modelReferenceLine,

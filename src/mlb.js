@@ -196,6 +196,11 @@ function splitRecordText(record) {
   return record ? `${record.wins}-${record.losses} (${safeFixed(toNumber(record.pct, 0) * 100, 0)}%)` : '-';
 }
 
+function compactText(value, maxLength = 140) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}…` : text;
+}
+
 function gamesPlayed(stat) {
   return Math.max(1, toNumber(stat?.gamesPlayed, 1));
 }
@@ -411,6 +416,87 @@ async function fetchSchedule(dateYmd) {
 
   const data = await fetchJson(`${MLB_BASE_URL}/schedule?${params}`);
   return (data.dates || []).flatMap((date) => date.games || []);
+}
+
+function injuryTransactionStartDate(season) {
+  return `${season}-01-01`;
+}
+
+function injuryNoteFromTransaction(description) {
+  const text = compactText(description, 220);
+  if (!text) return '';
+
+  const injuredListMatch = text.match(/injured list(?: retroactive to [^.]+)?\.\s*(.+)$/i);
+  if (injuredListMatch?.[1]) return compactText(injuredListMatch[1], 120);
+
+  const transferredMatch = text.match(/transferred .* injured list\.\s*(.+)$/i);
+  if (transferredMatch?.[1]) return compactText(transferredMatch[1], 120);
+
+  return compactText(text, 120);
+}
+
+async function fetchTeamInjuryProfile(teamId, dateYmd, season) {
+  const rosterParams = new URLSearchParams({
+    rosterType: '40Man',
+    date: dateYmd
+  });
+  const transactionParams = new URLSearchParams({
+    teamId: String(teamId),
+    startDate: injuryTransactionStartDate(season),
+    endDate: dateYmd
+  });
+
+  const [rosterData, transactionData] = await Promise.all([
+    fetchJson(`${MLB_BASE_URL}/teams/${teamId}/roster?${rosterParams}`),
+    fetchJson(`${MLB_BASE_URL}/transactions?${transactionParams}`)
+  ]);
+
+  const latestInjuryTransactions = new Map();
+  for (const transaction of transactionData.transactions || []) {
+    const personId = transaction.person?.id;
+    const description = transaction.description || '';
+    if (!personId || !/injured list|injury|injured/i.test(description)) continue;
+
+    latestInjuryTransactions.set(personId, {
+      date: transaction.date || '',
+      description,
+      note: injuryNoteFromTransaction(description)
+    });
+  }
+
+  return (rosterData.roster || [])
+    .filter((item) => /injured/i.test(item.status?.description || ''))
+    .map((item) => {
+      const latest = latestInjuryTransactions.get(item.person?.id) || null;
+      return {
+        id: item.person?.id,
+        name: item.person?.fullName || 'Unknown player',
+        position: item.position?.abbreviation || item.position?.name || '-',
+        status: item.status?.description || 'Injured',
+        note: latest?.note || '',
+        transactionDate: latest?.date || ''
+      };
+    })
+    .sort((a, b) => {
+      const statusSort = String(a.status).localeCompare(String(b.status));
+      return statusSort || String(a.name).localeCompare(String(b.name));
+    });
+}
+
+async function fetchInjuryProfiles(teamIds, dateYmd, season) {
+  const injuries = new Map();
+
+  await Promise.all(
+    teamIds.map(async (teamId) => {
+      try {
+        injuries.set(teamId, await fetchTeamInjuryProfile(teamId, dateYmd, season));
+      } catch {
+        injuries.set(teamId, []);
+      }
+    })
+  );
+
+  return injuries;
 }
 
 async function fetchTeamStats(season) {
@@ -958,6 +1044,22 @@ function advancedContext(team, profile) {
   ].join(' ');
 }
 
+function injuryCountLabel(team, injuries) {
+  const label = team.abbreviation || team.name;
+  const count = injuries.length;
+  return count > 0 ? `${label} IL ${count}` : `${label} IL clear`;
+}
+
+function injuryDetailLines(team, injuries) {
+  const label = team.abbreviation || team.name;
+  if (!injuries.length) return [`${label}: tidak ada pemain 40-man roster yang berstatus injured.`];
+
+  return injuries.map((injury) => {
+    const note = injury.note ? ` - ${injury.note}` : '';
+    return `${label}: ${injury.name} (${injury.position}, ${injury.status})${note}`;
+  });
+}
+
 function predictGame(
   game,
   teamStats,
@@ -968,6 +1070,7 @@ function predictGame(
   bullpenProfiles,
   headToHead,
   firstInningProfiles,
+  injuryProfiles,
   modelMemory
 ) {
   const awayTeam = game.teams.away.team;
@@ -988,6 +1091,8 @@ function predictGame(
   const homePitcherRecent = homeStarter ? pitcherRecentStarts.get(homeStarter.id) : null;
   const awayBullpen = bullpenProfiles.get(awayTeam.id) || finalizeBullpenProfile({ teamId: awayTeam.id, games: 0, bullpenPitches: 0, bullpenOuts: 0, relieverAppearances: 0, relieverDates: new Map(), highPitchRelievers: 0 });
   const homeBullpen = bullpenProfiles.get(homeTeam.id) || finalizeBullpenProfile({ teamId: homeTeam.id, games: 0, bullpenPitches: 0, bullpenOuts: 0, relieverAppearances: 0, relieverDates: new Map(), highPitchRelievers: 0 });
+  const awayInjuries = injuryProfiles.get(awayTeam.id) || [];
+  const homeInjuries = injuryProfiles.get(homeTeam.id) || [];
   const awayFirstInningProfile =
     firstInningProfiles.get(awayTeam.id) || defaultFirstInningProfile(awayTeam);
   const homeFirstInningProfile =
@@ -1116,6 +1221,15 @@ function predictGame(
     matchupSplitLine: `${matchupSplitLine(away, awayStanding, homeStarter, 'away')} | ${matchupSplitLine(home, homeStanding, awayStarter, 'home')}`,
     pitcherRecentLine: `${away.abbreviation || away.name} SP ${awayPitcherRecent?.line || 'recent starts unavailable'} | ${home.abbreviation || home.name} SP ${homePitcherRecent?.line || 'recent starts unavailable'}`,
     bullpenLine: `${away.abbreviation || away.name} bullpen ${awayBullpen.line} | ${home.abbreviation || home.name} bullpen ${homeBullpen.line}`,
+    injuryLine: `${injuryCountLabel(away, awayInjuries)} | ${injuryCountLabel(home, homeInjuries)}`,
+    injuryDetailLines: [
+      ...injuryDetailLines(away, awayInjuries),
+      ...injuryDetailLines(home, homeInjuries)
+    ],
+    injuries: {
+      away: awayInjuries,
+      home: homeInjuries
+    },
     modelReferenceLine: `${away.abbreviation || away.name} Pyth ${percent(awayPythagoreanPct * 100)} | ${home.abbreviation || home.name} Pyth ${percent(homePythagoreanPct * 100)} | Log5 home season ${percent(homeSeasonLog5 * 100)}, pyth ${percent(homePythagoreanLog5 * 100)}, recent ${percent(homeRecentLog5 * 100)}`,
     modelReference: {
       awayPythagoreanPct: Math.round(awayPythagoreanPct * 100),
@@ -1153,11 +1267,12 @@ export async function getMlbPredictions(dateYmd = dateInTimezone('Asia/Jakarta')
     ...new Set(games.flatMap((game) => [game.teams.away.team.id, game.teams.home.team.id]))
   ];
 
-  const [teamStats, standings, firstInningProfiles, bullpenProfiles] = await Promise.all([
+  const [teamStats, standings, firstInningProfiles, bullpenProfiles, injuryProfiles] = await Promise.all([
     fetchTeamStats(season),
     fetchStandings(season, dateYmd),
     fetchFirstInningProfiles(season, dateYmd),
-    fetchBullpenProfiles(teamIds, dateYmd)
+    fetchBullpenProfiles(teamIds, dateYmd),
+    fetchInjuryProfiles(teamIds, dateYmd, season)
   ]);
   const probablePitcherIds = [
     ...new Set(
@@ -1228,6 +1343,7 @@ export async function getMlbPredictions(dateYmd = dateInTimezone('Asia/Jakarta')
       bullpenProfiles,
       headToHeadStats.get(game.gamePk),
       firstInningProfiles,
+      injuryProfiles,
       modelMemory
     )
   );
@@ -1304,6 +1420,9 @@ export function formatPredictions(
     const pitcherRecentLines = splitInfoLine(item.pitcherRecentLine);
     const advancedLines = splitInfoLine(item.advancedLine);
     const modelReferenceLines = splitInfoLine(item.modelReferenceLine);
+    const injuryLines = item.injuryDetailLines?.length
+      ? item.injuryDetailLines.map((line) => `• ${line}`)
+      : splitInfoLine(item.injuryLine);
     const firstInningReasonLines = item.firstInning.agent?.reasons?.length
       ? item.firstInning.agent.reasons.map((reason) => `• ${reason}`)
       : item.firstInning.reasons.map((reason) => `• ${reason}`);
@@ -1340,6 +1459,9 @@ export function formatPredictions(
         '',
         '🧤 Bullpen',
         ...bullpenLines,
+        '',
+        '🏥 Injury Report',
+        ...injuryLines,
         '',
         '📈 SP Recent',
         ...pitcherRecentLines,

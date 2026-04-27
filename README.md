@@ -34,6 +34,7 @@ Data yang dianalisa:
 - Head-to-head musim berjalan.
 - First inning scored/allowed profile.
 - Bullpen fatigue 3 hari terakhir.
+- Injury report 40-man roster dari MLB StatsAPI.
 - Starting pitcher last 5 starts.
 - Splits vs LHP/RHP.
 - Post-game memory dari pick sebelumnya.
@@ -419,6 +420,7 @@ Prinsip analisa:
 - Bullpen fatigue memengaruhi risk.
 - H2H dipakai hati-hati karena sample kecil.
 - First inning dianalisa terpisah dari full-game pick.
+- Injury report dipakai sebagai availability risk, terutama hitter inti, starter, catcher, dan reliever leverage.
 - Memory adalah sinyal kecil, bukan penentu utama.
 
 ML reference layer yang ikut masuk ke Agent:
@@ -553,6 +555,7 @@ tests/                Unit tests Python
 ## Data Sources
 
 - MLB StatsAPI: schedule, standings, team stats, boxscore, linescore.
+- MLB StatsAPI: 40-man roster injury status dan transactions untuk catatan cedera.
 - Telegram Bot API.
 - OpenAI-compatible API.
 - MLB-StatsAPI GitHub endpoint references.

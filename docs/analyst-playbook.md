@@ -11,6 +11,7 @@ Agent bertindak sebagai analis MLB pre-game yang memakai baseline model sebagai 
 - offense
 - team pitching/run prevention
 - bullpen fatigue
+- injury report 40-man roster
 - splits vs pitcher handedness
 - home/road, L10, run differential, xW-L, streak
 - Pythagorean expectation dan Log5 reference model
@@ -26,6 +27,7 @@ Agent bertindak sebagai analis MLB pre-game yang memakai baseline model sebagai 
 - Jangan overfit memory. Memory adalah kalibrasi kecil dari kesalahan sebelumnya.
 - Analisa first inning harus terpisah dari full-game pick. Gunakan scored/allowed 1st inning, recent any-run, H2H 1st inning, dan starter.
 - Bullpen fatigue 3 hari terakhir dapat mengubah confidence, terutama jika starter berisiko pendek.
+- Injury report harus dipakai sebagai availability risk. Cedera hitter inti, probable starter, catcher utama, dan late-inning reliever lebih penting daripada cedera depth player.
 - Split vs LHP/RHP adalah supporting signal untuk melihat matchup offense terhadap starter lawan.
 - Pisahkan proses dari hasil: record/ERA bisa noisy, jadi cek K-BB, WHIP, HR/9, ISO, BB%, K%, run differential, dan xW-L.
 - Confidence harus konservatif.
