@@ -33,7 +33,14 @@ export class TelegramBot {
     return this.request('getUpdates', {
       offset,
       timeout,
-      allowed_updates: ['message']
+      allowed_updates: ['message', 'callback_query']
+    });
+  }
+
+  answerCallbackQuery(callbackQueryId, options = {}) {
+    return this.request('answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      ...options
     });
   }
 

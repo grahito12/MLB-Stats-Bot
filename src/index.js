@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { ANALYST_SKILL_VERSION, buildAnalystSkillSummary } from './analystSkill.js';
 import {
@@ -14,6 +16,7 @@ import { dateInTimezone, isValidDateYmd, timeInTimezone } from './utils.js';
 const config = loadConfig();
 const storage = new Storage();
 let postGameCheckRunning = false;
+const PREDICT_CALLBACK_PREFIX = 'predict:';
 
 function helpText() {
   return [
@@ -111,9 +114,13 @@ async function sendAlert(bot, chatId, dateYmd, options = {}) {
 
 function predictionHelpText() {
   return [
-    'Format: /predict HOME | AWAY | odds_opsional',
+    'Kirim /predict untuk memilih game dari tombol.',
+    '',
+    'Format manual: /predict HOME | AWAY | odds_opsional',
     '',
     'Contoh:',
+    '/predict',
+    '/predict 2026-04-27',
     '/predict Los Angeles Dodgers | New York Yankees',
     '/predict Los Angeles Dodgers | New York Yankees | -120',
     '/predict Los Angeles Dodgers | New York Yankees | decimal 1.91',
@@ -122,9 +129,109 @@ function predictionHelpText() {
   ].join('\n');
 }
 
+function parseCsvLine(line) {
+  const values = [];
+  let current = '';
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      values.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  values.push(current);
+  return values;
+}
+
+function readPredictionGames() {
+  const path = resolve(process.cwd(), 'data', 'sample_games.csv');
+  if (!existsSync(path)) return [];
+
+  const [headerLine, ...rows] = readFileSync(path, 'utf8').trim().split(/\r?\n/);
+  if (!headerLine) return [];
+
+  const headers = parseCsvLine(headerLine);
+  return rows
+    .map((line, index) => {
+      const values = parseCsvLine(line);
+      const row = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] || '']));
+      return {
+        index,
+        date: row.date,
+        home: row.home_team,
+        away: row.away_team,
+        homePitcher: row.home_pitcher,
+        awayPitcher: row.away_pitcher,
+        final: Boolean(row.home_score || row.away_score)
+      };
+    })
+    .filter((game) => game.date && game.home && game.away);
+}
+
+function gamesForPredictionMenu(dateYmd = '') {
+  const games = readPredictionGames();
+  const filteredByDate = dateYmd ? games.filter((game) => game.date === dateYmd) : games;
+  const candidates = filteredByDate.length > 0 ? filteredByDate : games;
+  const upcoming = candidates.filter((game) => !game.final);
+  return (upcoming.length > 0 ? upcoming : candidates).slice(0, 12);
+}
+
+function predictionKeyboard(games) {
+  return {
+    inline_keyboard: games.map((game) => [
+      {
+        text: `${game.away} @ ${game.home}`,
+        callback_data: `${PREDICT_CALLBACK_PREFIX}${game.index}`
+      }
+    ])
+  };
+}
+
+async function sendPredictionGameMenu(bot, chatId, dateYmd = '') {
+  const games = gamesForPredictionMenu(dateYmd);
+  if (games.length === 0) {
+    await bot.sendMessage(
+      chatId,
+      [
+        'Belum ada game di data/sample_games.csv.',
+        '',
+        'Kamu tetap bisa pakai format manual:',
+        '/predict Los Angeles Dodgers | New York Yankees'
+      ].join('\n')
+    );
+    return;
+  }
+
+  await bot.sendMessage(
+    chatId,
+    [
+      '📊 Pilih game untuk Python prediction:',
+      dateYmd ? `Tanggal: ${dateYmd}` : 'Sumber: data/sample_games.csv',
+      '',
+      'Tap salah satu matchup di bawah.'
+    ].join('\n'),
+    {
+      reply_markup: predictionKeyboard(games)
+    }
+  );
+}
+
 function parsePredictCommand(text) {
   const payload = text.replace(/^\/predict(?:@\S+)?\s*/i, '').trim();
-  if (!payload) return null;
+  if (!payload) return { menu: true };
+  if (isValidDateYmd(payload)) return { menu: true, dateYmd: payload };
 
   const parts = payload
     .split('|')
@@ -208,10 +315,41 @@ async function sendPythonPrediction(bot, chatId, text) {
     return;
   }
 
+  if (request.menu) {
+    await sendPredictionGameMenu(bot, chatId, request.dateYmd);
+    return;
+  }
+
   await bot.sendMessage(chatId, `Menjalankan Python prediction: ${request.away} @ ${request.home}...`);
   const output = await runPythonPrediction(request);
   await bot.sendMessage(chatId, formatPythonPredictionOutput(output));
   console.log(`Python prediction handled for ${chatId}: ${request.away} @ ${request.home}.`);
+}
+
+async function handlePredictCallback(bot, callbackQuery) {
+  const chatId = callbackQuery.message?.chat?.id;
+  const data = callbackQuery.data || '';
+  const rawIndex = data.slice(PREDICT_CALLBACK_PREFIX.length);
+  const index = Number.parseInt(rawIndex, 10);
+  const game = readPredictionGames().find((item) => item.index === index);
+
+  await bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+
+  if (!chatId) return;
+  if (!Number.isFinite(index) || !game) {
+    await bot.sendMessage(chatId, 'Game tidak ditemukan. Coba kirim /predict lagi untuk refresh daftar.');
+    return;
+  }
+
+  await bot.sendMessage(chatId, `Menjalankan Python prediction: ${game.away} @ ${game.home}...`);
+  const output = await runPythonPrediction({
+    home: game.home,
+    away: game.away,
+    odds: '',
+    oddsFormat: 'american'
+  });
+  await bot.sendMessage(chatId, formatPythonPredictionOutput(output));
+  console.log(`Python prediction callback handled for ${chatId}: ${game.away} @ ${game.home}.`);
 }
 
 async function sendAlertToAll(bot, dateYmd) {
@@ -532,6 +670,30 @@ async function handleMessage(bot, message) {
   await bot.sendMessage(chatId, helpText());
 }
 
+async function handleCallbackQuery(bot, callbackQuery) {
+  const chatId = callbackQuery.message?.chat?.id;
+  if (!chatId) return;
+
+  if (!isAllowed(chatId)) {
+    await bot.answerCallbackQuery(callbackQuery.id, {
+      text: 'Chat ini belum diizinkan.',
+      show_alert: true
+    });
+    return;
+  }
+
+  const data = callbackQuery.data || '';
+  if (data.startsWith(PREDICT_CALLBACK_PREFIX)) {
+    await handlePredictCallback(bot, callbackQuery);
+    return;
+  }
+
+  await bot.answerCallbackQuery(callbackQuery.id, {
+    text: 'Aksi tombol tidak dikenal.',
+    show_alert: false
+  });
+}
+
 async function poll(bot) {
   let offset = storage.getLastUpdateId() ? storage.getLastUpdateId() + 1 : undefined;
   console.log('Telegram bot polling aktif.');
@@ -547,6 +709,16 @@ async function poll(bot) {
           await handleMessage(bot, update.message).catch(async (error) => {
             console.error(error);
             await bot.sendMessage(update.message.chat.id, `Error: ${error.message}`).catch(() => {});
+          });
+        }
+
+        if (update.callback_query) {
+          await handleCallbackQuery(bot, update.callback_query).catch(async (error) => {
+            console.error(error);
+            const chatId = update.callback_query.message?.chat?.id;
+            if (chatId) {
+              await bot.sendMessage(chatId, `Error: ${error.message}`).catch(() => {});
+            }
           });
         }
       }
