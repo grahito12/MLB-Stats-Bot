@@ -1,6 +1,4 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { ANALYST_SKILL_VERSION, buildAnalystSkillSummary } from './analystSkill.js';
 import {
@@ -11,7 +9,7 @@ import {
 import { formatPredictions, getFinalGameResults, getMlbPredictions } from './mlb.js';
 import { Storage } from './storage.js';
 import { TelegramBot } from './telegram.js';
-import { dateInTimezone, isValidDateYmd, timeInTimezone } from './utils.js';
+import { dateInTimezone, isValidDateYmd, percent, timeInTimezone } from './utils.js';
 
 const config = loadConfig();
 const storage = new Storage();
@@ -27,7 +25,7 @@ function helpText() {
     '/deep - alert hari ini dengan advanced stats',
     '/date YYYY-MM-DD - alert tanggal tertentu',
     '/game TEAM - cek tim tertentu hari ini',
-    '/predict HOME | AWAY | odds_opsional - jalankan Python ML prediction',
+    '/predict - pilih game MLB dari tombol',
     '/ask pertanyaan - tanya Analyst Agent',
     'Atau kirim pertanyaan biasa tanpa slash.',
     '/agent - lihat status Analyst Agent',
@@ -125,87 +123,31 @@ function predictionHelpText() {
     '/predict Los Angeles Dodgers | New York Yankees | -120',
     '/predict Los Angeles Dodgers | New York Yankees | decimal 1.91',
     '',
-    'Catatan: command ini memakai Python ML engine dan sample CSV lokal di folder data/.'
+    'Catatan: /predict tanpa matchup memakai schedule MLB live. Format manual memakai Python ML engine dan sample CSV lokal.'
   ].join('\n');
 }
 
-function parseCsvLine(line) {
-  const values = [];
-  let current = '';
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    const next = line[index + 1];
-
-    if (char === '"' && quoted && next === '"') {
-      current += '"';
-      index += 1;
-    } else if (char === '"') {
-      quoted = !quoted;
-    } else if (char === ',' && !quoted) {
-      values.push(current);
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-
-  values.push(current);
-  return values;
-}
-
-function readPredictionGames() {
-  const path = resolve(process.cwd(), 'data', 'sample_games.csv');
-  if (!existsSync(path)) return [];
-
-  const [headerLine, ...rows] = readFileSync(path, 'utf8').trim().split(/\r?\n/);
-  if (!headerLine) return [];
-
-  const headers = parseCsvLine(headerLine);
-  return rows
-    .map((line, index) => {
-      const values = parseCsvLine(line);
-      const row = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] || '']));
-      return {
-        index,
-        date: row.date,
-        home: row.home_team,
-        away: row.away_team,
-        homePitcher: row.home_pitcher,
-        awayPitcher: row.away_pitcher,
-        final: Boolean(row.home_score || row.away_score)
-      };
-    })
-    .filter((game) => game.date && game.home && game.away);
-}
-
-function gamesForPredictionMenu(dateYmd = '') {
-  const games = readPredictionGames();
-  const filteredByDate = dateYmd ? games.filter((game) => game.date === dateYmd) : games;
-  const candidates = filteredByDate.length > 0 ? filteredByDate : games;
-  const upcoming = candidates.filter((game) => !game.final);
-  return (upcoming.length > 0 ? upcoming : candidates).slice(0, 12);
-}
-
-function predictionKeyboard(games) {
+function predictionKeyboard(dateYmd, games) {
   return {
     inline_keyboard: games.map((game) => [
       {
-        text: `${game.away} @ ${game.home}`,
-        callback_data: `${PREDICT_CALLBACK_PREFIX}${game.index}`
+        text: `${game.away.abbreviation || game.away.name} @ ${game.home.abbreviation || game.home.name} - ${game.start}`,
+        callback_data: `${PREDICT_CALLBACK_PREFIX}${dateYmd}:${game.gamePk}`
       }
     ])
   };
 }
 
 async function sendPredictionGameMenu(bot, chatId, dateYmd = '') {
-  const games = gamesForPredictionMenu(dateYmd);
+  const targetDate = dateYmd || dateInTimezone(config.timezone);
+  const modelMemory = config.modelMemory ? storage.getMemory() : {};
+  const games = await getMlbPredictions(targetDate, modelMemory);
+
   if (games.length === 0) {
     await bot.sendMessage(
       chatId,
       [
-        'Belum ada game di data/sample_games.csv.',
+        `Tidak ada game MLB pada ${targetDate}.`,
         '',
         'Kamu tetap bisa pakai format manual:',
         '/predict Los Angeles Dodgers | New York Yankees'
@@ -217,13 +159,13 @@ async function sendPredictionGameMenu(bot, chatId, dateYmd = '') {
   await bot.sendMessage(
     chatId,
     [
-      '📊 Pilih game untuk Python prediction:',
-      dateYmd ? `Tanggal: ${dateYmd}` : 'Sumber: data/sample_games.csv',
+      '📊 Pilih game untuk MLB prediction:',
+      `Tanggal: ${targetDate}`,
       '',
       'Tap salah satu matchup di bawah.'
     ].join('\n'),
     {
-      reply_markup: predictionKeyboard(games)
+      reply_markup: predictionKeyboard(targetDate, games)
     }
   );
 }
@@ -308,6 +250,65 @@ function formatPythonPredictionOutput(output) {
   ].join('\n');
 }
 
+function displayedPredictionProbabilities(prediction) {
+  return {
+    away: prediction.agentAnalysis?.awayProbability ?? Math.round(prediction.away.winProbability),
+    home: prediction.agentAnalysis?.homeProbability ?? Math.round(prediction.home.winProbability)
+  };
+}
+
+function predictionPick(prediction) {
+  const agent = prediction.agentAnalysis;
+  if (agent?.pickTeamId === prediction.away.id) return prediction.away;
+  if (agent?.pickTeamId === prediction.home.id) return prediction.home;
+  return prediction.winner;
+}
+
+function formatLivePrediction(dateYmd, prediction) {
+  const probabilities = displayedPredictionProbabilities(prediction);
+  const pick = predictionPick(prediction);
+  const agentActive = Boolean(prediction.agentAnalysis);
+  const reasons = agentActive ? prediction.agentAnalysis.reasons : prediction.reasons;
+  const firstInning = prediction.firstInning;
+  const firstPick = firstInning?.agent?.pick || firstInning?.baselinePick || 'NO';
+  const firstProbability = firstInning?.agent?.probability ?? firstInning?.baselineProbability ?? 50;
+  const firstLabel = firstPick === 'YES' ? 'YES / YRFI' : 'NO / NRFI';
+
+  return [
+    '📊 MLB Prediction',
+    `📅 ${dateYmd}`,
+    '',
+    `🏟️ ${prediction.away.name} @ ${prediction.home.name}`,
+    `🕒 ${prediction.start}`,
+    `📍 ${prediction.venue}`,
+    '',
+    '────────────',
+    'Probabilitas',
+    `${agentActive ? 'Agent' : 'Model'}: ${prediction.away.abbreviation || prediction.away.name} ${percent(probabilities.away)} | ${prediction.home.abbreviation || prediction.home.name} ${percent(probabilities.home)}`,
+    agentActive
+      ? `Baseline: ${prediction.away.abbreviation || prediction.away.name} ${percent(prediction.away.winProbability)} | ${prediction.home.abbreviation || prediction.home.name} ${percent(prediction.home.winProbability)}`
+      : null,
+    '',
+    '────────────',
+    `Pick: ${pick.name}${agentActive ? ` (${prediction.agentAnalysis.confidence})` : ''}`,
+    `SP: ${prediction.away.starterLine} vs ${prediction.home.starterLine}`,
+    '',
+    'ML Reference',
+    prediction.modelReferenceLine,
+    '',
+    'First Inning',
+    `Will there be a run in the 1st? ${firstLabel} ${percent(firstProbability)}`,
+    '',
+    'Alasan:',
+    ...reasons.slice(0, 3).map((reason) => `• ${reason}`),
+    agentActive ? `Risk: ${prediction.agentAnalysis.risk}` : null,
+    '',
+    '⚠️ Estimasi model, bukan jaminan hasil atau betting advice.'
+  ]
+    .filter((line) => line !== null && line !== undefined)
+    .join('\n');
+}
+
 async function sendPythonPrediction(bot, chatId, text) {
   const request = parsePredictCommand(text);
   if (!request) {
@@ -316,6 +317,10 @@ async function sendPythonPrediction(bot, chatId, text) {
   }
 
   if (request.menu) {
+    await bot.sendMessage(
+      chatId,
+      `Mengambil semua game MLB ${request.dateYmd || dateInTimezone(config.timezone)}...`
+    );
     await sendPredictionGameMenu(bot, chatId, request.dateYmd);
     return;
   }
@@ -329,27 +334,33 @@ async function sendPythonPrediction(bot, chatId, text) {
 async function handlePredictCallback(bot, callbackQuery) {
   const chatId = callbackQuery.message?.chat?.id;
   const data = callbackQuery.data || '';
-  const rawIndex = data.slice(PREDICT_CALLBACK_PREFIX.length);
-  const index = Number.parseInt(rawIndex, 10);
-  const game = readPredictionGames().find((item) => item.index === index);
+  const [dateYmd, rawGamePk] = data.slice(PREDICT_CALLBACK_PREFIX.length).split(':');
+  const gamePk = Number.parseInt(rawGamePk, 10);
 
-  await bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+  await bot.answerCallbackQuery(callbackQuery.id, { text: 'Mengambil prediksi...' }).catch(() => {});
 
   if (!chatId) return;
-  if (!Number.isFinite(index) || !game) {
+  if (!isValidDateYmd(dateYmd) || !Number.isFinite(gamePk)) {
+    await bot.sendMessage(chatId, 'Data tombol tidak valid. Coba kirim /predict lagi untuk refresh daftar.');
+    return;
+  }
+
+  await bot.sendMessage(chatId, `Menganalisa game MLB ${dateYmd}...`);
+  const modelMemory = config.modelMemory ? storage.getMemory() : {};
+  const predictions = await getMlbPredictions(dateYmd, modelMemory);
+  const prediction = predictions.find((item) => item.gamePk === gamePk);
+
+  if (!prediction) {
     await bot.sendMessage(chatId, 'Game tidak ditemukan. Coba kirim /predict lagi untuk refresh daftar.');
     return;
   }
 
-  await bot.sendMessage(chatId, `Menjalankan Python prediction: ${game.away} @ ${game.home}...`);
-  const output = await runPythonPrediction({
-    home: game.home,
-    away: game.away,
-    odds: '',
-    oddsFormat: 'american'
-  });
-  await bot.sendMessage(chatId, formatPythonPredictionOutput(output));
-  console.log(`Python prediction callback handled for ${chatId}: ${game.away} @ ${game.home}.`);
+  await attachAgentAnalyses([prediction]);
+  storage.savePredictions(dateYmd, [prediction]);
+  await bot.sendMessage(chatId, formatLivePrediction(dateYmd, prediction));
+  console.log(
+    `Live prediction callback handled for ${chatId}: ${prediction.away.name} @ ${prediction.home.name}.`
+  );
 }
 
 async function sendAlertToAll(bot, dateYmd) {

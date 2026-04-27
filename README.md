@@ -258,7 +258,7 @@ Format Telegram:
 /predict HOME | AWAY | odds_home_opsional
 ```
 
-Jika `/predict` dikirim tanpa matchup, bot menampilkan tombol pilihan game dari `data/sample_games.csv`.
+Jika `/predict` dikirim tanpa matchup, bot menampilkan semua game MLB dari MLB StatsAPI pada tanggal tersebut. Setelah tombol dipilih, bot memakai prediction model/Agent dari data live. Format manual tetap memakai Python ML engine dan CSV lokal.
 
 Jika Python di mesin kamu bukan `python`, atur di `.env`:
 
