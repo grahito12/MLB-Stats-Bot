@@ -275,6 +275,12 @@ function formatLivePrediction(dateYmd, prediction) {
   const pick = predictionPick(prediction);
   const agentActive = Boolean(prediction.agentAnalysis);
   const reasons = agentActive ? prediction.agentAnalysis.reasons : prediction.reasons;
+  const confidence = agentActive ? prediction.agentAnalysis.confidence : 'model';
+  const pickProbability =
+    pick.id === prediction.away.id ? probabilities.away : probabilities.home;
+  const opponent = pick.id === prediction.away.id ? prediction.home : prediction.away;
+  const opponentProbability =
+    pick.id === prediction.away.id ? probabilities.home : probabilities.away;
   const firstInning = prediction.firstInning;
   const firstPick = firstInning?.agent?.pick || firstInning?.baselinePick || 'NO';
   const firstProbability = firstInning?.agent?.probability ?? firstInning?.baselineProbability ?? 50;
@@ -289,15 +295,23 @@ function formatLivePrediction(dateYmd, prediction) {
     `📍 ${prediction.venue}`,
     '',
     '────────────',
-    'Probabilitas',
-    `${agentActive ? 'Agent' : 'Model'}: ${prediction.away.abbreviation || prediction.away.name} ${percent(probabilities.away)} | ${prediction.home.abbreviation || prediction.home.name} ${percent(probabilities.home)}`,
+    '🏆 Hasil Predict',
+    `Predicted Winner: ${pick.name}`,
+    `Win Probability: ${percent(pickProbability)}`,
+    `Opponent: ${opponent.name} ${percent(opponentProbability)}`,
+    `Confidence: ${confidence}`,
+    `Source: ${agentActive ? 'Analyst Agent + live MLB stats' : 'Baseline model + live MLB stats'}`,
+    '',
+    '────────────',
+    '📊 Probabilitas Detail',
+    `${prediction.away.abbreviation || prediction.away.name}: ${percent(probabilities.away)} | ${prediction.home.abbreviation || prediction.home.name}: ${percent(probabilities.home)}`,
     agentActive
       ? `Baseline: ${prediction.away.abbreviation || prediction.away.name} ${percent(prediction.away.winProbability)} | ${prediction.home.abbreviation || prediction.home.name} ${percent(prediction.home.winProbability)}`
       : null,
     '',
     '────────────',
-    `Pick: ${pick.name}${agentActive ? ` (${prediction.agentAnalysis.confidence})` : ''}`,
-    `SP: ${prediction.away.starterLine} vs ${prediction.home.starterLine}`,
+    '🔥 Starting Pitcher',
+    `${prediction.away.starterLine} vs ${prediction.home.starterLine}`,
     '',
     'ML Reference',
     prediction.modelReferenceLine,
