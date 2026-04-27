@@ -281,7 +281,7 @@ Will there be a run in the 1st? YES / YRFI 54%
 Agent memakai playbook:
 
 ```text
-mlb-analyst-v1.0
+mlb-analyst-v1.1
 ```
 
 Playbook ada di:
@@ -300,6 +300,24 @@ Prinsip analisa:
 - H2H dipakai hati-hati karena sample kecil.
 - First inning dianalisa terpisah dari full-game pick.
 - Memory adalah sinyal kecil, bukan penentu utama.
+
+ML reference layer yang ikut masuk ke Agent:
+
+- Ensemble agreement dari beberapa sinyal, bukan satu angka saja.
+- Pythagorean expectation untuk melihat regression risk.
+- Log5 untuk prior matchup dari kekuatan dua tim.
+- Recent window last 5-10 games dan last 3-5 starter starts.
+- Anti data leakage: tidak memakai data yang belum tersedia sebelum game.
+- Market-edge thinking jika odds/implied probability ditambahkan dari external agent.
+- Score/run thinking sebagai pendukung full-game dan YRFI/NRFI.
+
+Referensi GitHub yang dipakai sebagai inspirasi metodologi:
+
+- https://github.com/whrg/MLB_prediction
+- https://github.com/andrew-cui-zz/mlb-game-prediction
+- https://github.com/Forrest31/Baseball-Betting-Model
+- https://github.com/kylejohnson363/Predicting-MLB-Games-with-Machine-Learning
+- https://github.com/laplaces42/mlb_game_predictor
 
 ## First Inning / YRFI-NRFI
 
@@ -363,6 +381,7 @@ Endpoint akan menerima JSON berisi:
 - `analystPlaybook`
 - `memory`
 - `games`
+- `modelReference` di setiap game: Pythagorean dan Log5 signals
 - `outputContract`
 
 Expected response:
@@ -411,6 +430,7 @@ docs/analyst-playbook.md
 - OpenAI-compatible API.
 - MLB-StatsAPI GitHub endpoint references.
 - FanGraphs/Statcast concepts for analyst playbook.
+- MLB prediction GitHub references for Log5, Pythagorean expectation, ensemble modeling, odds edge, and score/run projection concepts.
 
 ## Security
 
@@ -447,4 +467,3 @@ Post-game tidak jalan:
 - Pastikan pre-game alert sudah dibuat sebelum game final.
 - Pastikan `POST_GAME_ALERTS=true`.
 - Cek `/postgame YYYY-MM-DD`.
-

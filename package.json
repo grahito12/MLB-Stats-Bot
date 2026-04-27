@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "once": "node src/index.js --once",
-    "check": "node --check src/index.js && node --check src/config.js && node --check src/telegram.js && node --check src/mlb.js && node --check src/storage.js && node --check src/llm.js && node --check src/utils.js"
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/telegram.js && node --check src/mlb.js && node --check src/storage.js && node --check src/llm.js && node --check src/analystSkill.js && node --check src/utils.js"
   },
   "engines": {
     "node": ">=18.15"

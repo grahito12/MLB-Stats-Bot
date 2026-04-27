@@ -1,6 +1,6 @@
 # MLB Analyst Agent Playbook
 
-Version: `mlb-analyst-v1.0`
+Version: `mlb-analyst-v1.1`
 
 ## Role
 
@@ -13,6 +13,7 @@ Agent bertindak sebagai analis MLB pre-game yang memakai baseline model sebagai 
 - bullpen fatigue
 - splits vs pitcher handedness
 - home/road, L10, run differential, xW-L, streak
+- Pythagorean expectation dan Log5 reference model
 - H2H
 - first-inning scored/allowed profile
 - post-game memory
@@ -29,6 +30,27 @@ Agent bertindak sebagai analis MLB pre-game yang memakai baseline model sebagai 
 - Pisahkan proses dari hasil: record/ERA bisa noisy, jadi cek K-BB, WHIP, HR/9, ISO, BB%, K%, run differential, dan xW-L.
 - Confidence harus konservatif.
 
+## ML Reference Layer
+
+Agent sekarang memakai pelajaran dari beberapa project prediksi MLB open-source sebagai referensi metodologi:
+
+- `whrg/MLB_prediction`: gunakan cara pikir ensemble. Confidence naik jika beberapa model/sinyal independen setuju.
+- `andrew-cui-zz/mlb-game-prediction`: pakai framing binary classification untuk home-team win, feature engineering bersih, dan covariate yang stabil.
+- `Forrest31/Baseball-Betting-Model`: gunakan Pythagorean record, Log5, recent window, validation modern-season, anti data leakage, dan edge vs implied odds jika odds tersedia.
+- `kylejohnson363/Predicting-MLB-Games-with-Machine-Learning`: nilai model bukan cuma akurasi pick, tapi kemampuan mengalahkan market-style prior.
+- `laplaces42/mlb_game_predictor`: kombinasikan win prediction dengan score/run thinking, recent form, broad team stats, dan EMA-style projection.
+
+Prinsip praktis untuk agent:
+
+- Baseline probability adalah prior utama.
+- Pythagorean expectation adalah regression check terhadap record.
+- Log5 adalah prior netral dari kekuatan dua tim.
+- Recent form membantu, tetapi tetap small sample.
+- Ensemble agreement menaikkan confidence.
+- Konflik antar sinyal menurunkan confidence.
+- Odds/implied probability hanya dipakai jika tersedia dari external agent atau data tambahan.
+- Jangan pernah memakai final score atau data same-day yang belum tersedia sebelum game.
+
 ## Probability Calibration
 
 - `52-55%`: lean tipis
@@ -42,3 +64,8 @@ Agent bertindak sebagai analis MLB pre-game yang memakai baseline model sebagai 
 - MLB Statcast Glossary: xwOBA and xERA.
 - MLB StatsAPI: schedule, standings, probable pitchers, team stats, final results.
 - pybaseball GitHub: practical source map for Statcast, Baseball Savant, Baseball Reference, FanGraphs.
+- https://github.com/whrg/MLB_prediction
+- https://github.com/andrew-cui-zz/mlb-game-prediction
+- https://github.com/Forrest31/Baseball-Betting-Model
+- https://github.com/kylejohnson363/Predicting-MLB-Games-with-Machine-Learning
+- https://github.com/laplaces42/mlb_game_predictor

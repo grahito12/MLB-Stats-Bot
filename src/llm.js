@@ -147,6 +147,8 @@ function compactGameForAgent(item) {
     pitcherRecent: item.pitcherRecentLine,
     pitcherRecentDetail: item.pitcherRecent,
     advanced: item.advancedLine,
+    modelReference: item.modelReference,
+    modelReferenceLine: item.modelReferenceLine,
     baselineReasons: item.reasons,
     firstInning: item.firstInning
       ? {

@@ -134,6 +134,42 @@ function runDiffPerGame(standing) {
   return toNumber(standing?.runDifferential, 0) / games;
 }
 
+function firstFiniteNumber(values, fallback) {
+  for (const value of values) {
+    const parsed = toNumber(value, Number.NaN);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  return fallback;
+}
+
+function pythagoreanWinPct(standing, profile) {
+  const games = Math.max(
+    1,
+    firstFiniteNumber([standing?.gamesPlayed, profile?.hitting?.gamesPlayed], 1)
+  );
+  const runsFor = Math.max(
+    1,
+    firstFiniteNumber([standing?.runsScored, profile?.hitting?.runs], DEFAULTS.rpg * games)
+  );
+  const runsAgainst = Math.max(
+    1,
+    firstFiniteNumber([standing?.runsAllowed, profile?.pitching?.runs], DEFAULTS.rpg * games)
+  );
+  const exponent = 1.83;
+  const scoredPower = Math.pow(runsFor, exponent);
+  const allowedPower = Math.pow(runsAgainst, exponent);
+  return clamp(scoredPower / (scoredPower + allowedPower), 0.25, 0.75);
+}
+
+function log5Probability(teamWinPct, opponentWinPct) {
+  const team = clamp(toNumber(teamWinPct, DEFAULTS.winPct), 0.05, 0.95);
+  const opponent = clamp(toNumber(opponentWinPct, DEFAULTS.winPct), 0.05, 0.95);
+  const denominator = team + opponent - 2 * team * opponent;
+  if (Math.abs(denominator) < 0.0001) return DEFAULTS.winPct;
+  return clamp((team - team * opponent) / denominator, 0.05, 0.95);
+}
+
 function signed(value) {
   const parsed = toNumber(value, 0);
   return parsed > 0 ? `+${parsed}` : String(parsed);
@@ -983,6 +1019,13 @@ function predictGame(
   const awayLastTenPct = splitPct(awayStanding, 'lastTen');
   const homeRunDiff = runDiffPerGame(homeStanding);
   const awayRunDiff = runDiffPerGame(awayStanding);
+  const homePythagoreanPct = pythagoreanWinPct(homeStanding, homeProfile);
+  const awayPythagoreanPct = pythagoreanWinPct(awayStanding, awayProfile);
+  const homeSeasonLog5 = log5Probability(homeWinPct, awayWinPct);
+  const homePythagoreanLog5 = log5Probability(homePythagoreanPct, awayPythagoreanPct);
+  const homeRecentLog5 = log5Probability(homeLastTenPct, awayLastTenPct);
+  const homeReferenceBlend =
+    homeSeasonLog5 * 0.45 + homePythagoreanLog5 * 0.35 + homeRecentLog5 * 0.2;
   const homeMemoryBias = teamMemoryBias(modelMemory, homeTeam.id);
   const awayMemoryBias = teamMemoryBias(modelMemory, awayTeam.id);
 
@@ -1003,6 +1046,8 @@ function predictGame(
     (homeLastTenPct - awayLastTenPct) * 0.45 +
     (homeVenuePct - awayVenuePct) * 0.3 +
     (homeRunDiff - awayRunDiff) / 7;
+  const pythagoreanEdge = homePythagoreanPct - awayPythagoreanPct;
+  const log5Edge = homeReferenceBlend - 0.5;
   const h2hEdge = headToHead?.games > 0 ? (headToHead.homeProbability - 50) / 50 : 0;
   const memoryEdge = homeMemoryBias - awayMemoryBias;
   const edge =
@@ -1011,6 +1056,8 @@ function predictGame(
     preventionEdge * 0.2 +
     spEdge * 0.26 +
     formEdge +
+    pythagoreanEdge * 0.35 +
+    log5Edge * 0.85 +
     h2hEdge * 0.12 +
     memoryEdge +
     0.18;
@@ -1069,6 +1116,15 @@ function predictGame(
     matchupSplitLine: `${matchupSplitLine(away, awayStanding, homeStarter, 'away')} | ${matchupSplitLine(home, homeStanding, awayStarter, 'home')}`,
     pitcherRecentLine: `${away.abbreviation || away.name} SP ${awayPitcherRecent?.line || 'recent starts unavailable'} | ${home.abbreviation || home.name} SP ${homePitcherRecent?.line || 'recent starts unavailable'}`,
     bullpenLine: `${away.abbreviation || away.name} bullpen ${awayBullpen.line} | ${home.abbreviation || home.name} bullpen ${homeBullpen.line}`,
+    modelReferenceLine: `${away.abbreviation || away.name} Pyth ${percent(awayPythagoreanPct * 100)} | ${home.abbreviation || home.name} Pyth ${percent(homePythagoreanPct * 100)} | Log5 home season ${percent(homeSeasonLog5 * 100)}, pyth ${percent(homePythagoreanLog5 * 100)}, recent ${percent(homeRecentLog5 * 100)}`,
+    modelReference: {
+      awayPythagoreanPct: Math.round(awayPythagoreanPct * 100),
+      homePythagoreanPct: Math.round(homePythagoreanPct * 100),
+      homeSeasonLog5: Math.round(homeSeasonLog5 * 100),
+      homePythagoreanLog5: Math.round(homePythagoreanLog5 * 100),
+      homeRecentLog5: Math.round(homeRecentLog5 * 100),
+      homeReferenceBlend: Math.round(homeReferenceBlend * 100)
+    },
     pitcherRecent: {
       away: awayPitcherRecent,
       home: homePitcherRecent
@@ -1221,6 +1277,7 @@ export function formatPredictions(
     const bullpenLines = splitInfoLine(item.bullpenLine);
     const pitcherRecentLines = splitInfoLine(item.pitcherRecentLine);
     const advancedLines = splitInfoLine(item.advancedLine);
+    const modelReferenceLines = splitInfoLine(item.modelReferenceLine);
     const firstInningReasonLines = item.firstInning.agent?.reasons?.length
       ? item.firstInning.agent.reasons.map((reason) => `• ${reason}`)
       : item.firstInning.reasons.map((reason) => `• ${reason}`);
@@ -1263,6 +1320,9 @@ export function formatPredictions(
         includeAdvanced ? '' : null,
         includeAdvanced ? '🔎 Advanced' : null,
         ...(includeAdvanced ? advancedLines : []),
+        includeAdvanced ? '' : null,
+        includeAdvanced ? '🧠 ML Reference' : null,
+        ...(includeAdvanced ? modelReferenceLines : []),
         '',
         SECTION_SEPARATOR,
         agentActive ? '💡 Analisa Agent' : '💡 Alasan',
