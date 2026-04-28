@@ -404,6 +404,23 @@ from src.agent_tools import (
 print(explain_prediction(0))
 ```
 
+Telegram interactive actions:
+
+```text
+/agenttools
+/tools
+/kb why does FIP matter more than ERA?
+```
+
+`/agenttools` membuka tombol:
+
+- `Game Tools`: pilih game dari CSV/sample layer.
+- `Moneyline`: output pick, probability, market ML, edge, dan no-bet flag.
+- `Total`: output projected total, market total, over/under line, confidence, dan no-bet flag.
+- `Context`: output park, weather, market total, dan run line.
+- `Full`: ringkasan minimal moneyline + total + faktor utama.
+- `Knowledge`: tombol wRC+, FIP, wind, bullpen, market total, value bet, betting markets, dan first 5.
+
 Contoh knowledge question:
 
 ```python
@@ -495,6 +512,8 @@ Catatan: ini bukan betting advice. MLB punya variance tinggi, dan probabilitas m
 /predict
 /predict Los Angeles Dodgers | New York Yankees
 /predict Los Angeles Dodgers | New York Yankees | -120
+/agenttools
+/kb why does wind blowing out increase over probability?
 /ask game mana yang edge-nya paling kuat hari ini?
 /agent
 /skill

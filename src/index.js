@@ -23,6 +23,7 @@ let postGameCheckRunning = false;
 let autoUpdateCheckRunning = false;
 const PREDICT_CALLBACK_PREFIX = 'predict_live:';
 const LEGACY_PREDICT_CALLBACK_PREFIX = 'predict:';
+const AGENT_TOOL_CALLBACK_PREFIX = 'agent_tool:';
 const TOTAL_MARKET_BUTTONS = [6.5, 7.5, 8.5, 9.5, 10.5, 11.5];
 
 function helpText() {
@@ -35,6 +36,8 @@ function helpText() {
     '/date YYYY-MM-DD - alert tanggal tertentu',
     '/game TEAM - cek tim tertentu hari ini',
     '/predict - pilih game MLB dari tombol',
+    '/agenttools - tools interaktif data/knowledge layer',
+    '/kb pertanyaan - tanya knowledge base MLB',
     '/ask pertanyaan - tanya Analyst Agent',
     'Atau kirim pertanyaan biasa tanpa slash.',
     '/agent - lihat status Analyst Agent',
@@ -300,6 +303,50 @@ function runPythonPrediction({ home, away, odds, oddsFormat }) {
   });
 }
 
+function runAgentBridge(action, args = []) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.pythonExecutable, ['-m', 'src.telegram_agent_bridge', action, ...args], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PYTHONDONTWRITEBYTECODE: '1'
+      },
+      windowsHide: true
+    });
+
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('Agent tools timeout. Coba lagi sebentar.'));
+    }, 20_000);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `Python exited with code ${code}`).trim()));
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(stdout.trim() || '{}'));
+      } catch (error) {
+        reject(new Error(`Agent tools output tidak valid: ${error.message}`));
+      }
+    });
+  });
+}
+
 function formatPythonPredictionOutput(output) {
   return [
     '📊 MLB Python Prediction',
@@ -308,6 +355,93 @@ function formatPythonPredictionOutput(output) {
     '',
     '⚠️ Estimasi model, bukan jaminan hasil atau betting advice.'
   ].join('\n');
+}
+
+function agentToolHomeKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Game Tools', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}games` },
+        { text: 'Knowledge', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}knowledge` }
+      ]
+    ]
+  };
+}
+
+function agentToolGamesKeyboard(games) {
+  return {
+    inline_keyboard: [
+      ...games.map((game) => [
+        {
+          text: game.label,
+          callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}game:${game.id}`
+        }
+      ]),
+      [{ text: 'Knowledge', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}knowledge` }]
+    ]
+  };
+}
+
+function agentToolActionKeyboard(gameId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Moneyline', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}moneyline:${gameId}` },
+        { text: 'Total', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}total:${gameId}` }
+      ],
+      [
+        { text: 'Context', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}context:${gameId}` },
+        { text: 'Full', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}full:${gameId}` }
+      ],
+      [{ text: 'Back to Games', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}games` }]
+    ]
+  };
+}
+
+function agentKnowledgeKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'wRC+ vs OPS', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:wrc` },
+        { text: 'FIP vs ERA', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:fip` }
+      ],
+      [
+        { text: 'Wind & Over', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:wind` },
+        { text: 'Bullpen Fatigue', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:bullpen` }
+      ],
+      [
+        { text: 'Market Total', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:market` },
+        { text: 'Value Bet', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:value` }
+      ],
+      [
+        { text: 'Markets', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:markets` },
+        { text: 'First 5', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}kb:f5` }
+      ],
+      [{ text: 'Game Tools', callback_data: `${AGENT_TOOL_CALLBACK_PREFIX}games` }]
+    ]
+  };
+}
+
+async function sendAgentToolsMenu(bot, chatId) {
+  await bot.sendMessage(
+    chatId,
+    ['MLB Agent Tools', '', 'Pilih action:'].join('\n'),
+    { reply_markup: agentToolHomeKeyboard() }
+  );
+}
+
+async function sendAgentToolGames(bot, chatId) {
+  const payload = await runAgentBridge('games');
+  await bot.sendMessage(chatId, payload.text || 'Pilih game:', {
+    reply_markup: agentToolGamesKeyboard(payload.games || [])
+  });
+}
+
+async function sendKnowledgeAnswer(bot, chatId, query) {
+  const payload = await runAgentBridge('knowledge', [query]);
+  await bot.sendMessage(chatId, payload.text || 'Knowledge tidak tersedia.', {
+    reply_markup: agentKnowledgeKeyboard()
+  });
 }
 
 function displayedPredictionProbabilities(prediction) {
@@ -517,6 +651,50 @@ async function handlePredictCallback(bot, callbackQuery) {
   );
 }
 
+async function handleAgentToolCallback(bot, callbackQuery) {
+  const chatId = callbackQuery.message?.chat?.id;
+  const data = callbackQuery.data || '';
+  const [action, value = ''] = data.slice(AGENT_TOOL_CALLBACK_PREFIX.length).split(':');
+
+  await bot.answerCallbackQuery(callbackQuery.id, { text: 'Loading...' }).catch(() => {});
+  if (!chatId) return;
+
+  if (action === 'games') {
+    await sendAgentToolGames(bot, chatId);
+    return;
+  }
+
+  if (action === 'knowledge') {
+    await bot.sendMessage(chatId, 'Pilih topik knowledge:', {
+      reply_markup: agentKnowledgeKeyboard()
+    });
+    return;
+  }
+
+  if (action === 'kb') {
+    await sendKnowledgeAnswer(bot, chatId, value || 'wrc');
+    return;
+  }
+
+  if (action === 'game') {
+    const payload = await runAgentBridge('game', [value]);
+    await bot.sendMessage(chatId, payload.text || 'Game tidak tersedia.', {
+      reply_markup: agentToolActionKeyboard(value)
+    });
+    return;
+  }
+
+  if (['moneyline', 'total', 'context', 'full'].includes(action)) {
+    const payload = await runAgentBridge(action, [value]);
+    await bot.sendMessage(chatId, payload.text || 'Output tidak tersedia.', {
+      reply_markup: agentToolActionKeyboard(value)
+    });
+    return;
+  }
+
+  await bot.sendMessage(chatId, 'Action tidak dikenal. Coba /agenttools lagi.');
+}
+
 async function sendAlertToAll(bot, dateYmd) {
   const chatIds = targetChatIds();
 
@@ -582,6 +760,7 @@ function formatAgentStatus() {
     `Memory: ${config.modelMemory ? 'aktif' : 'mati'}`,
     `Interactive chat: ${config.interactiveAgent ? 'aktif' : 'mati'}`,
     `Post-game learning: ${config.postGameAlerts ? 'aktif' : 'mati'}`,
+    'Tools: /agenttools atau /kb',
     '',
     `Memory sample: ${summary.totalPicks} pick, akurasi ${summary.accuracy}%`,
     '',
@@ -872,6 +1051,23 @@ async function handleMessage(bot, message) {
     return;
   }
 
+  if (command === '/agenttools' || command === '/tools') {
+    await sendAgentToolsMenu(bot, chatId);
+    return;
+  }
+
+  if (command === '/kb' || command === '/knowledge') {
+    const query = args.join(' ').trim();
+    if (!query) {
+      await bot.sendMessage(chatId, 'Pilih topik knowledge:', {
+        reply_markup: agentKnowledgeKeyboard()
+      });
+      return;
+    }
+    await sendKnowledgeAnswer(bot, chatId, query);
+    return;
+  }
+
   if (command === '/ask') {
     await askAgent(bot, chatId, args.join(' '));
     return;
@@ -939,6 +1135,11 @@ async function handleCallbackQuery(bot, callbackQuery) {
   const data = callbackQuery.data || '';
   if (data.startsWith(PREDICT_CALLBACK_PREFIX)) {
     await handlePredictCallback(bot, callbackQuery);
+    return;
+  }
+
+  if (data.startsWith(AGENT_TOOL_CALLBACK_PREFIX)) {
+    await handleAgentToolCallback(bot, callbackQuery);
     return;
   }
 

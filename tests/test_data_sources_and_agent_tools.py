@@ -11,6 +11,7 @@ from src.data_sources.odds_client import extract_market_snapshot
 from src.data_sources.retrosheet_loader import load_game_logs, team_recent_form
 from src.data_sources.statcast_loader import load_statcast_csv, summarize_statcast
 from src.knowledge.baseball_knowledge import answer_baseball_question
+from src.telegram_agent_bridge import list_games, moneyline, total_runs
 
 
 class KnowledgeLayerTests(unittest.TestCase):
@@ -76,7 +77,12 @@ class AgentToolTests(unittest.TestCase):
         self.assertEqual(split["pitcher_hand"], "RHP")
         self.assertGreater(split["ops"], 0)
 
+    def test_telegram_bridge_minimal_outputs(self) -> None:
+        games = list_games()
+        self.assertGreaterEqual(len(games["games"]), 1)
+        self.assertIn("Pick:", moneyline("0")["text"])
+        self.assertIn("Over:", total_runs("0")["text"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

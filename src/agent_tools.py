@@ -106,6 +106,7 @@ def get_today_games(use_live: bool = False, date_ymd: str | None = None) -> list
             "home_team": game.home_team,
             "away_pitcher": game.away_pitcher,
             "home_pitcher": game.home_pitcher,
+            "final": game.home_score is not None and game.away_score is not None,
         }
         for index, game in enumerate(load_sample_games())
     ]
