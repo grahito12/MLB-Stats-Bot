@@ -301,8 +301,12 @@ Jika memakai provider seperti AWS, DigitalOcean, Vultr, Hostinger, atau lainnya,
 
 Mode dashboard:
 
-- `Sample`: memakai CSV lokal dan Python prediction layer. Ini selalu bisa jalan tanpa API berbayar.
-- `Live`: memakai MLB StatsAPI live untuk slate dan prediction context. Mode ini butuh koneksi internet dari VPS.
+- `Live Games`: default. Memakai MLB StatsAPI live untuk schedule, status game, probable pitcher, lineup/boxscore context, bullpen context, injury context, dan model prediction pada tanggal yang dipilih.
+- `Sample CSV`: fallback untuk tes Python prediction layer dari CSV lokal. Mode ini bukan jadwal live dan bisa berisi matchup contoh lama.
+
+Kalau game di dashboard tidak sesuai jadwal hari ini, pastikan tab yang aktif adalah `Live Games`, bukan `Sample CSV`, lalu klik `Refresh`. Jika tidak ada game, dashboard akan menampilkan pesan kosong dari MLB StatsAPI untuk tanggal tersebut, bukan lagi diam-diam memakai sample data.
+
+Catatan market: dashboard tidak mengarang odds. Jika `ODDS_API_KEY`/provider odds belum dikonfigurasi, bagian market akan ditandai sebagai unavailable/default baseline.
 
 Fitur interaktif:
 

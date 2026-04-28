@@ -1,10 +1,11 @@
 const state = {
-  source: 'sample',
+  source: 'live',
   games: [],
   selectedId: null,
   selectedAnalysis: null,
   activeView: 'overview',
   evaluation: null,
+  status: null,
 };
 
 const els = {
@@ -75,6 +76,39 @@ function signedPct(value) {
   return `${parsed >= 0 ? '+' : ''}${parsed.toFixed(1)}%`;
 }
 
+function signedRuns(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '-';
+  return `${parsed >= 0 ? '+' : ''}${parsed.toFixed(1)}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString([], {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function sourceLabel() {
+  return state.source === 'live' ? 'Live MLB StatsAPI' : 'Sample CSV model';
+}
+
+function sourceHelp() {
+  return state.source === 'live'
+    ? 'Jadwal dan konteks diambil dari MLB StatsAPI untuk tanggal yang dipilih.'
+    : 'Sample CSV lokal untuk tes model saat data live/API tidak dipakai.';
+}
+
+function compactLine(value, fallback = '-') {
+  const text = String(value || '').trim();
+  return text || fallback;
+}
+
 function toast(message) {
   els.toast.textContent = message;
   els.toast.hidden = false;
@@ -112,6 +146,36 @@ function pill(label, value) {
   return `<span class="pill ${confidenceClass(value)}">${escapeHtml(label)}: ${escapeHtml(value)}</span>`;
 }
 
+function statusPill(label, value, detail = '') {
+  const normalized = String(value || '').toLowerCase();
+  const cls =
+    normalized.includes('confirm') || normalized.includes('available') || normalized.includes('ready')
+      ? 'good'
+      : normalized.includes('partial') ||
+          normalized.includes('default') ||
+          normalized.includes('projected') ||
+          normalized.includes('scheduled')
+        ? 'warn'
+        : normalized.includes('missing') || normalized.includes('unavailable') || normalized.includes('stale')
+          ? 'bad'
+          : '';
+  return `
+    <div class="status-item">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
+      </div>
+      <span class="pill ${cls}">${escapeHtml(value || '-')}</span>
+    </div>
+  `;
+}
+
+function textList(items = [], fallback = 'No data available.') {
+  const clean = items.map((item) => String(item || '').trim()).filter(Boolean);
+  if (!clean.length) return `<p class="muted">${escapeHtml(fallback)}</p>`;
+  return `<ul class="clean-list">${clean.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+}
+
 function barRow(label, value, alt = false) {
   const percent = Math.max(0, Math.min(100, toPercent(value)));
   return `
@@ -134,6 +198,7 @@ function statusText(enabled) {
 
 async function loadStatus() {
   const status = await api('/api/status');
+  state.status = status;
   els.telegramStatus.textContent = statusText(status.config.telegramConfigured);
   els.telegramDetail.textContent = status.config.telegramChatConfigured
     ? `${status.state.subscriberCount} subscriber, chat configured`
@@ -144,6 +209,7 @@ async function loadStatus() {
 
   els.memoryAccuracy.textContent = `${status.memory.accuracy || 0}%`;
   els.memoryDetail.textContent = `${status.memory.correctPicks || 0}/${status.memory.totalPicks || 0} picks, ${status.memory.firstInning.accuracy || 0}% first inning`;
+  return status;
 }
 
 async function loadEvaluation() {
@@ -159,10 +225,14 @@ function normalizeGame(game) {
     id: String(game.game_id ?? game.gamePk ?? game.id),
     away: game.away_team || game.away?.name,
     home: game.home_team || game.home?.name,
+    awayAbbr: game.away_abbreviation || game.away?.abbreviation,
+    homeAbbr: game.home_abbreviation || game.home?.abbreviation,
     date: game.date || '',
     start: game.start || game.game_time || '',
     venue: game.venue || '',
     status: game.status || (game.final ? 'Final' : 'Scheduled'),
+    gameState: game.gameState || '',
+    updatedAt: game.updatedAt || '',
     raw: game,
   };
 }
@@ -170,6 +240,7 @@ function normalizeGame(game) {
 async function loadGames() {
   setLoading(els.gameList, true);
   try {
+    els.selectedSource.textContent = sourceLabel();
     const payload =
       state.source === 'sample'
         ? await api('/api/sample/games')
@@ -178,15 +249,22 @@ async function loadGames() {
     if (!state.games.length) {
       state.selectedId = null;
       renderGames();
-      renderEmpty('No games found for this source/date.');
+      const message =
+        state.source === 'live'
+          ? `Tidak ada MLB game live untuk ${els.dateInput.value}. Coba pilih tanggal lain atau gunakan Sample CSV untuk tes model.`
+          : 'Tidak ada game sample CSV yang bisa ditampilkan.';
+      renderEmpty(message);
       return;
     }
     state.selectedId = state.games[0].id;
     renderGames();
     await selectGame(state.selectedId);
   } catch (error) {
+    state.games = [];
+    state.selectedId = null;
+    renderGames();
     toast(error.message);
-    renderEmpty(`Unable to load games. ${error.message}`);
+    renderEmpty(`Live/source data gagal dimuat: ${error.message}`);
   } finally {
     setLoading(els.gameList, false);
   }
@@ -199,23 +277,45 @@ function renderGames() {
   );
   els.gameCount.textContent = `${filtered.length} game${filtered.length === 1 ? '' : 's'}`;
   els.gameList.innerHTML = filtered
-    .map(
-      (game) => `
+    .map((game) => {
+      const raw = game.raw || {};
+      const pick = raw.pick?.name
+        ? `Pick: ${raw.pick.name} ${pct(raw.pick.probability || 0)}`
+        : state.source === 'live'
+          ? 'Pick: waiting for model'
+          : 'Sample prediction';
+      const total = raw.totalRuns?.projectedTotal
+        ? `Total: ${runs(raw.totalRuns.projectedTotal)} | ${raw.totalRuns.bestLean || '-'}`
+        : 'Total: unavailable';
+      const stateLabel = game.gameState || (state.source === 'live' ? 'live' : 'sample');
+      return `
         <button class="game-card ${game.id === state.selectedId ? 'active' : ''}" data-game-id="${escapeHtml(game.id)}" type="button">
-          <strong>${escapeHtml(game.away)} @ ${escapeHtml(game.home)}</strong>
+          <div class="game-card-top">
+            <strong>${escapeHtml(game.away)} @ ${escapeHtml(game.home)}</strong>
+            <span class="source-badge">${escapeHtml(stateLabel)}</span>
+          </div>
           <span>${escapeHtml(game.start || game.date || 'TBD')} | ${escapeHtml(game.status)}</span>
-          <span>${escapeHtml(game.venue || 'Sample data')}</span>
+          <span>${escapeHtml(game.venue || sourceHelp())}</span>
+          <div class="game-card-lines">
+            <span>${escapeHtml(pick)}</span>
+            <span>${escapeHtml(total)}</span>
+          </div>
         </button>
-      `
-    )
+      `;
+    })
     .join('');
 }
 
 function renderEmpty(message) {
   els.matchupTitle.textContent = 'No selection';
-  els.matchupMeta.textContent = '';
+  els.matchupMeta.textContent = sourceHelp();
   els.analysisBody.className = 'analysis-body empty-state';
-  els.analysisBody.innerHTML = `<p>${escapeHtml(message)}</p>`;
+  els.analysisBody.innerHTML = `
+    <div class="empty-copy">
+      <strong>${escapeHtml(sourceLabel())}</strong>
+      <p>${escapeHtml(message)}</p>
+    </div>
+  `;
 }
 
 async function selectGame(gameId) {
@@ -249,7 +349,7 @@ function renderAnalysis() {
     return;
   }
   els.analysisBody.className = 'analysis-body';
-  els.selectedSource.textContent = state.source === 'sample' ? 'Sample model' : 'Live MLB StatsAPI';
+  els.selectedSource.textContent = sourceLabel();
   els.tabButtons.forEach((button) => {
     button.classList.toggle('active', button.dataset.view === state.activeView);
   });
@@ -264,7 +364,14 @@ function renderAnalysis() {
 
   const game = state.selectedAnalysis.live;
   els.matchupTitle.textContent = game?.matchup || 'Live matchup';
-  els.matchupMeta.textContent = `${game?.start || ''} | ${game?.venue || ''}`;
+  els.matchupMeta.textContent = [
+    game?.start || '',
+    game?.venue || '',
+    game?.status || '',
+    game?.updatedAt ? `Updated ${formatDateTime(game.updatedAt)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' | ');
   renderLiveView(game);
 }
 
@@ -351,22 +458,31 @@ function renderTotalsView(totals = {}) {
   const over = totals.over_probabilities || totals.over || {};
   const under = totals.under_probabilities || totals.under || {};
   const lines = ['6.5', '7.5', '8.5', '9.5', '10.5', '11.5'];
+  const drivers = totals.drivers || {};
+  const edge = totals.model_edge ?? totals.modelEdge;
+  const marketDelta =
+    totals.marketDeltaRuns ?? (Number(totals.projected_total_runs ?? totals.projectedTotal) - Number(totals.market_total ?? totals.marketLine));
   return `
     <div class="detail-grid">
       <section class="detail-panel">
         <h3>Projected Total</h3>
         <p class="big-number">${runs(totals.projected_total_runs ?? totals.projectedTotal)}</p>
-        <p class="muted">Market ${runs(totals.market_total ?? totals.marketLine)}</p>
+        <p class="muted">Model expected total runs.</p>
       </section>
       <section class="detail-panel">
-        <h3>Lean</h3>
+        <h3>Market Line</h3>
+        <p class="big-number">${runs(totals.market_total ?? totals.marketLine)}</p>
+        <p class="muted">${Number.isFinite(Number(marketDelta)) ? `${signedRuns(marketDelta)} runs vs model` : 'Market total unavailable'}</p>
+      </section>
+      <section class="detail-panel">
+        <h3>Best Lean</h3>
         <p class="big-number">${escapeHtml(totals.raw_lean || totals.best_total_lean || totals.bestLean || '-')}</p>
-        <p class="muted">${escapeHtml(totals.confidence || '-')} confidence</p>
+        <p class="muted">${escapeHtml(totals.confidence || '-')} confidence | ${escapeHtml(totals.marketSource || totals.decision || '')}</p>
       </section>
       <section class="detail-panel">
-        <h3>Edge</h3>
-        <p class="big-number">${totals.model_edge === null || totals.model_edge === undefined ? '-' : signedPct(totals.model_edge)}</p>
-        <p class="muted">${escapeHtml(totals.decision || '')}</p>
+        <h3>Model Edge</h3>
+        <p class="big-number">${edge === null || edge === undefined ? '-' : signedPct(edge)}</p>
+        <p class="muted">Compared with market/implied baseline.</p>
       </section>
       <section class="detail-panel wide">
         <h3>Over Probability</h3>
@@ -382,7 +498,18 @@ function renderTotalsView(totals = {}) {
         ${lines.map((line) => barRow(`Under ${line}`, under[line], true)).join('')}
       </section>
       <section class="detail-panel">
-        <h3>Factors</h3>
+        <h3>Run Drivers</h3>
+        <div class="driver-grid">
+          <span>Offense</span><strong>${signedRuns(drivers.offense)}</strong>
+          <span>Starting pitcher</span><strong>${signedRuns(drivers.startingPitcher)}</strong>
+          <span>Bullpen</span><strong>${signedRuns(drivers.bullpen)}</strong>
+          <span>Weather</span><strong>${signedRuns(drivers.weather)}</strong>
+          <span>Lineup</span><strong>${signedRuns(drivers.lineup)}</strong>
+          <span>Injuries</span><strong>${signedRuns(drivers.injuries)}</strong>
+        </div>
+      </section>
+      <section class="detail-panel full">
+        <h3>Total Factors</h3>
         ${factorList(totals.main_factors || totals.factors || [])}
       </section>
     </div>
@@ -445,17 +572,32 @@ function renderLiveView(game) {
     return;
   }
   if (state.activeView === 'quality') {
+    const fields = Object.values(game.quality?.fields || {});
     els.analysisBody.innerHTML = `
       <div class="detail-grid">
         <section class="detail-panel">
-          <h3>Live Context Score</h3>
+          <h3>Data Quality Score</h3>
           <p class="big-number">${game.quality?.score ?? 0}/100</p>
           <p class="muted">${escapeHtml(game.quality?.note || '')}</p>
         </section>
         <section class="detail-panel wide">
-          <h3>Starters</h3>
-          <p>${escapeHtml(game.starters?.away || '-')}</p>
-          <p>${escapeHtml(game.starters?.home || '-')}</p>
+          <h3>Input Status</h3>
+          <div class="status-list">
+            ${fields.map((field) => statusPill(field.label, field.status, field.detail)).join('')}
+          </div>
+        </section>
+        <section class="detail-panel">
+          <h3>Missing Data</h3>
+          ${textList(game.quality?.missingFields || [], 'No missing fields detected.')}
+        </section>
+        <section class="detail-panel">
+          <h3>Confidence Notes</h3>
+          ${textList(game.quality?.confidenceAdjustments || [], 'No confidence downgrade noted.')}
+        </section>
+        <section class="detail-panel full">
+          <h3>Live Source</h3>
+          <p class="muted">${escapeHtml(game.source || 'MLB StatsAPI live')}</p>
+          <p class="muted">Fetched ${escapeHtml(formatDateTime(game.updatedAt))}. Market odds are shown only when an odds provider is configured.</p>
         </section>
       </div>
     `;
@@ -465,10 +607,19 @@ function renderLiveView(game) {
     els.analysisBody.innerHTML = `
       <div class="detail-grid">
         <section class="detail-panel wide">
-          <h3>Live Win Probability</h3>
+          <h3>Moneyline Probability</h3>
           ${barRow(game.home_team, game.probabilities?.home)}
           ${barRow(game.away_team, game.probabilities?.away, true)}
-          <div class="pill-row">${pill('Pick', game.pick?.name || '-')}${pill('Confidence', game.pick?.confidence || '-')}</div>
+          <div class="pill-row">
+            ${pill('Pick', game.pick?.name || '-')}
+            ${pill('Confidence', game.pick?.confidence || '-')}
+            ${pill('Source', game.pick?.source || 'model')}
+          </div>
+        </section>
+        <section class="detail-panel">
+          <h3>Starting Pitchers</h3>
+          <p class="compact-text">${escapeHtml(game.starters?.away || '-')}</p>
+          <p class="compact-text">${escapeHtml(game.starters?.home || '-')}</p>
         </section>
         <section class="detail-panel">
           <h3>First Inning</h3>
@@ -476,8 +627,12 @@ function renderLiveView(game) {
           <p class="muted">${pct(game.firstInning?.probability || 0)} probability</p>
         </section>
         <section class="detail-panel full">
-          <h3>Reasons</h3>
-          ${factorList(game.reasons || [])}
+          <h3>Main Supporting Factors</h3>
+          ${textList(game.reasons || [])}
+        </section>
+        <section class="detail-panel full">
+          <h3>Risk Factors</h3>
+          <p class="muted">${escapeHtml(compactLine(game.risk, 'No specific risk note.'))}</p>
         </section>
       </div>
     `;
@@ -486,19 +641,24 @@ function renderLiveView(game) {
   els.analysisBody.innerHTML = `
     <div class="detail-grid">
       <section class="detail-panel">
-        <h3>Pick</h3>
+        <h3>Game Status</h3>
+        <p class="big-number">${escapeHtml(game.gameState || 'live')}</p>
+        <p class="muted">${escapeHtml(game.status || '-')} | ${escapeHtml(game.start || '-')}</p>
+      </section>
+      <section class="detail-panel">
+        <h3>Moneyline Pick</h3>
         <p class="big-number">${escapeHtml(game.pick?.name || '-')}</p>
         <p class="muted">${pct(game.pick?.probability || 0)} probability</p>
       </section>
       <section class="detail-panel">
         <h3>Total Runs</h3>
         <p class="big-number">${runs(game.totalRuns?.projectedTotal)}</p>
-        <p class="muted">${escapeHtml(game.totalRuns?.bestLean || 'No total data')}</p>
+        <p class="muted">${escapeHtml(game.totalRuns?.bestLean || 'No total data')} | market ${runs(game.totalRuns?.marketLine)}</p>
       </section>
       <section class="detail-panel">
         <h3>Quality</h3>
         <p class="big-number">${game.quality?.score ?? 0}/100</p>
-        <p class="muted">Live context score</p>
+        <p class="muted">${escapeHtml(game.quality?.missingFields?.length ? `${game.quality.missingFields.length} missing field(s)` : 'Core context available')}</p>
       </section>
       <section class="detail-panel wide">
         <h3>Win Probability</h3>
@@ -508,11 +668,43 @@ function renderLiveView(game) {
       <section class="detail-panel">
         <h3>First Inning</h3>
         <p class="big-number">${escapeHtml(game.firstInning?.pick || '-')}</p>
-        <p class="muted">${pct(game.firstInning?.probability || 0)}</p>
+        <p class="muted">${pct(game.firstInning?.probability || 0)} | baseline ${escapeHtml(game.firstInning?.baselinePick || '-')} ${pct(game.firstInning?.baselineProbability || 0)}</p>
       </section>
       <section class="detail-panel full">
-        <h3>Factors</h3>
-        ${factorList(game.reasons || [])}
+        <h3>Starting Pitchers</h3>
+        <div class="two-col-list">
+          <div><span>Away</span><strong>${escapeHtml(game.starters?.away || '-')}</strong></div>
+          <div><span>Home</span><strong>${escapeHtml(game.starters?.home || '-')}</strong></div>
+        </div>
+      </section>
+      <section class="detail-panel wide">
+        <h3>Main Supporting Factors</h3>
+        ${textList(game.reasons || [])}
+      </section>
+      <section class="detail-panel">
+        <h3>Market Note</h3>
+        <p class="muted">${escapeHtml(game.totalRuns?.marketSource || 'Market odds unavailable until Odds API is configured.')}</p>
+      </section>
+      <section class="detail-panel full">
+        <h3>Context Snapshot</h3>
+        <div class="context-grid">
+          <div>
+            <strong>Standings/Form</strong>
+            ${textList(game.context?.standings || [])}
+          </div>
+          <div>
+            <strong>Bullpen</strong>
+            ${textList(game.context?.bullpen || [])}
+          </div>
+          <div>
+            <strong>Lineup</strong>
+            ${textList(game.context?.lineup || [])}
+          </div>
+          <div>
+            <strong>Injury</strong>
+            ${textList(game.context?.injuries || [])}
+          </div>
+        </div>
       </section>
     </div>
   `;
@@ -550,17 +742,20 @@ async function runBacktest() {
   }
 }
 
+function setSourceMode(source) {
+  state.source = source;
+  els.sourceLive.classList.toggle('active', source === 'live');
+  els.sourceSample.classList.toggle('active', source === 'sample');
+  els.selectedSource.textContent = sourceLabel();
+}
+
 function bindEvents() {
   els.sourceSample.addEventListener('click', async () => {
-    state.source = 'sample';
-    els.sourceSample.classList.add('active');
-    els.sourceLive.classList.remove('active');
+    setSourceMode('sample');
     await loadGames();
   });
   els.sourceLive.addEventListener('click', async () => {
-    state.source = 'live';
-    els.sourceLive.classList.add('active');
-    els.sourceSample.classList.remove('active');
+    setSourceMode('live');
     await loadGames();
   });
   els.refreshButton.addEventListener('click', async () => {
@@ -593,9 +788,13 @@ function bindEvents() {
 }
 
 async function init() {
-  els.dateInput.value = today();
   bindEvents();
-  await Promise.allSettled([loadStatus(), loadEvaluation()]);
+  setSourceMode(state.source);
+  const [statusResult] = await Promise.allSettled([loadStatus(), loadEvaluation()]);
+  els.dateInput.value =
+    statusResult?.status === 'fulfilled' && statusResult.value?.app?.serverDate
+      ? statusResult.value.app.serverDate
+      : today();
   await loadGames();
 }
 

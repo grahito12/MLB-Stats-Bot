@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { getMlbPredictions } from './mlb.js';
 import { Storage } from './storage.js';
-import { dateInTimezone } from './utils.js';
+import { dateInTimezone, toNumber } from './utils.js';
 
 const config = loadConfig();
 const storage = new Storage();
@@ -178,90 +178,254 @@ async function runBacktest(body) {
   return { output, evaluation };
 }
 
-function liveQuality(prediction) {
+function liveDisplayProbabilities(prediction) {
+  return {
+    away: Math.round(prediction.agentAnalysis?.awayProbability ?? prediction.away?.winProbability ?? 50),
+    home: Math.round(prediction.agentAnalysis?.homeProbability ?? prediction.home?.winProbability ?? 50),
+  };
+}
+
+function livePick(prediction, probabilities) {
+  if (prediction.agentAnalysis?.pickTeamId === prediction.away?.id) return prediction.away;
+  if (prediction.agentAnalysis?.pickTeamId === prediction.home?.id) return prediction.home;
+  return probabilities.home >= probabilities.away ? prediction.home : prediction.away;
+}
+
+function liveGameState(status) {
+  const value = String(status || '').toLowerCase();
+  if (value.includes('final') || value.includes('game over') || value.includes('completed')) return 'final';
+  if (
+    value.includes('progress') ||
+    value.includes('live') ||
+    value.includes('inning') ||
+    value.includes('delayed')
+  ) {
+    return 'live';
+  }
+  if (value.includes('postponed') || value.includes('cancel') || value.includes('suspended')) return 'off';
+  return 'scheduled';
+}
+
+function splitDashboardLine(value) {
+  return String(value || '')
+    .split(' | ')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function fieldStatus(label, status, detail = '') {
+  return { label, status, detail };
+}
+
+function liveQualityReport(prediction, fetchedAt) {
   let score = 0;
   const awayStarter = prediction.away?.starterLine || '';
   const homeStarter = prediction.home?.starterLine || '';
   const awayLineup = prediction.lineups?.away;
   const homeLineup = prediction.lineups?.home;
+  const probablePitchersConfirmed =
+    awayStarter && homeStarter && !awayStarter.includes('TBD') && !homeStarter.includes('TBD');
+  const lineupConfirmed = awayLineup?.confirmed && homeLineup?.confirmed;
+  const lineupPartial = Boolean(awayLineup || homeLineup);
+  const weatherAvailable = prediction.totalRuns?.detail?.weather !== undefined;
+  const bullpenAvailable = Boolean(prediction.bullpenLine);
+  const parkAvailable = Boolean(prediction.totalRuns?.detail?.park);
+  const marketTotalAvailable = Boolean(prediction.totalRuns?.marketLine);
+  const injuryAvailable = Boolean(prediction.injuryDetailLines?.length || prediction.injuryLine);
+  const missingFields = [];
+  const confidenceAdjustments = [];
 
-  if (awayStarter && homeStarter && !awayStarter.includes('TBD') && !homeStarter.includes('TBD')) {
+  if (probablePitchersConfirmed) {
     score += 20;
+  } else {
+    missingFields.push('probable pitchers');
+    confidenceAdjustments.push('probable pitcher missing or TBD');
   }
-  if (awayLineup?.confirmed && homeLineup?.confirmed) {
+  if (lineupConfirmed) {
     score += 15;
-  } else if (awayLineup || homeLineup) {
+  } else if (lineupPartial) {
     score += 7;
+    confidenceAdjustments.push('lineup not fully confirmed');
+  } else {
+    missingFields.push('confirmed lineup');
+    confidenceAdjustments.push('lineup missing');
   }
-  if (prediction.totalRuns?.detail && prediction.totalRuns.detail.weather !== undefined) score += 10;
-  if (prediction.bullpen?.away && prediction.bullpen?.home) score += 15;
-  if (prediction.totalRuns?.detail?.park) score += 10;
-  if (prediction.totalRuns?.marketLine) score += 10;
-  if (prediction.injuryDetailLines?.length || prediction.injuryLine) score += 5;
+  if (weatherAvailable) score += 10;
+  else missingFields.push('weather');
+  if (bullpenAvailable) score += 15;
+  else missingFields.push('bullpen usage');
+  if (parkAvailable) score += 10;
+  else missingFields.push('park factor');
+  if (marketTotalAvailable) score += 10;
+  else missingFields.push('market total');
+  if (injuryAvailable) score += 5;
+  else missingFields.push('injury context');
 
-  return Math.min(100, score);
+  const fields = {
+    probablePitchers: fieldStatus(
+      'Probable pitchers',
+      probablePitchersConfirmed ? 'Confirmed' : 'Missing/TBD',
+      `${prediction.away?.abbreviation || prediction.away?.name || 'Away'}: ${awayStarter || 'TBD'} | ${
+        prediction.home?.abbreviation || prediction.home?.name || 'Home'
+      }: ${homeStarter || 'TBD'}`
+    ),
+    lineup: fieldStatus(
+      'Lineup',
+      lineupConfirmed ? 'Confirmed' : lineupPartial ? 'Projected/partial' : 'Missing',
+      prediction.lineupLine || 'Lineup not available yet'
+    ),
+    weather: fieldStatus(
+      'Weather',
+      weatherAvailable ? 'Available' : 'Missing',
+      weatherAvailable ? `Run adjustment ${prediction.totalRuns.detail.weather}` : 'No weather adjustment found'
+    ),
+    odds: fieldStatus(
+      'Market odds',
+      'Unavailable',
+      'Live Odds API is optional; dashboard will not invent market odds.'
+    ),
+    bullpen: fieldStatus('Bullpen usage', bullpenAvailable ? 'Available' : 'Missing', prediction.bullpenLine || ''),
+    park: fieldStatus(
+      'Park factor',
+      parkAvailable ? 'Available' : 'Missing',
+      prediction.totalRuns?.detail?.park
+        ? `${prediction.totalRuns.detail.park.label} Run PF ${prediction.totalRuns.detail.park.runFactorPct}`
+        : ''
+    ),
+    marketTotal: fieldStatus(
+      'Market total',
+      marketTotalAvailable ? 'Default/model line' : 'Missing',
+      marketTotalAvailable
+        ? `${prediction.totalRuns.marketLine} used until live sportsbook odds are configured`
+        : ''
+    ),
+  };
+
+  return {
+    score: Math.min(100, score),
+    note:
+      'Live slate comes from MLB StatsAPI. Odds are only live when an optional odds provider is configured.',
+    fields,
+    missingFields,
+    staleFields: [],
+    confidenceAdjustments,
+    fetchedAt,
+  };
 }
 
-function summarizeLivePrediction(prediction) {
+function summarizeTotalRuns(totalRuns, venue) {
+  if (!totalRuns) return null;
+  const detail = totalRuns.detail || {};
+  const park = detail.park || null;
+  return {
+    projectedTotal: totalRuns.projectedTotal,
+    marketLine: totalRuns.marketLine,
+    marketSource: 'Default baseline unless Odds API is configured',
+    marketDeltaRuns: totalRuns.marketDeltaRuns,
+    modelEdge: totalRuns.modelEdge,
+    bestLean: totalRuns.bestLean,
+    confidence: totalRuns.confidence,
+    over: totalRuns.over,
+    under: totalRuns.under,
+    homeExpectedRuns: totalRuns.homeExpectedRuns,
+    awayExpectedRuns: totalRuns.awayExpectedRuns,
+    factors: totalRuns.factors || [],
+    drivers: {
+      offense: toNumber(detail.homeOffense, 0) + toNumber(detail.awayOffense, 0),
+      startingPitcher: toNumber(detail.homeStarterAllowed, 0) + toNumber(detail.awayStarterAllowed, 0),
+      bullpen: toNumber(detail.homeBullpenAllowed, 0) + toNumber(detail.awayBullpenAllowed, 0),
+      weather: toNumber(detail.weather, 0),
+      lineup: toNumber(detail.homeLineupAdj, 0) + toNumber(detail.awayLineupAdj, 0),
+      injuries: toNumber(detail.homeInjuryAdj, 0) + toNumber(detail.awayInjuryAdj, 0),
+    },
+    park: park
+      ? {
+          label: park.label || venue,
+          runFactorPct: park.runFactorPct,
+          homeRunFactorPct: park.homeRunFactorPct,
+        }
+      : null,
+  };
+}
+
+function summarizeLivePrediction(prediction, meta = {}) {
   const totalRuns = prediction.totalRuns || null;
-  const pick = prediction.winner || prediction.home;
-  const awayProbability = Math.round(prediction.away?.winProbability || 0);
-  const homeProbability = Math.round(prediction.home?.winProbability || 0);
+  const probabilities = liveDisplayProbabilities(prediction);
+  const pick = livePick(prediction, probabilities);
+  const pickProbability = pick?.id === prediction.away?.id ? probabilities.away : probabilities.home;
+  const agentActive = Boolean(prediction.agentAnalysis);
+  const firstInningPick = prediction.firstInning?.agent?.pick || prediction.firstInning?.baselinePick;
+  const firstInningProbability =
+    prediction.firstInning?.agent?.probability ?? prediction.firstInning?.baselineProbability;
 
   return {
     game_id: String(prediction.gamePk),
+    source: 'MLB StatsAPI live',
+    sourceMode: 'live',
+    date: meta.dateYmd,
+    updatedAt: meta.fetchedAt,
     status: prediction.status,
+    gameState: liveGameState(prediction.status),
     start: prediction.start,
     venue: prediction.venue,
     away_team: prediction.away?.name,
     home_team: prediction.home?.name,
+    away_abbreviation: prediction.away?.abbreviation,
+    home_abbreviation: prediction.home?.abbreviation,
     matchup: `${prediction.away?.name} @ ${prediction.home?.name}`,
     probabilities: {
-      away: awayProbability,
-      home: homeProbability,
+      away: probabilities.away,
+      home: probabilities.home,
     },
     pick: {
       name: pick?.name,
-      probability: Math.max(awayProbability, homeProbability),
+      probability: pickProbability,
       confidence: prediction.agentAnalysis?.confidence || 'model',
+      source: agentActive ? 'Analyst Agent + deterministic model' : 'Deterministic model',
     },
     starters: {
       away: prediction.away?.starterLine || 'TBD',
       home: prediction.home?.starterLine || 'TBD',
     },
-    totalRuns: totalRuns
-      ? {
-          projectedTotal: totalRuns.projectedTotal,
-          marketLine: totalRuns.marketLine,
-          bestLean: totalRuns.bestLean,
-          confidence: totalRuns.confidence,
-          over: totalRuns.over,
-          under: totalRuns.under,
-          factors: totalRuns.factors || [],
-        }
-      : null,
+    totalRuns: summarizeTotalRuns(totalRuns, prediction.venue),
     firstInning: prediction.firstInning
       ? {
-          pick: prediction.firstInning.agent?.pick || prediction.firstInning.baselinePick,
-          probability: Math.round(
-            prediction.firstInning.agent?.probability ?? prediction.firstInning.baselineProbability ?? 0
-          ),
+          pick: firstInningPick === 'YES' ? 'YES / YRFI' : 'NO / NRFI',
+          probability: Math.round(firstInningProbability ?? 0),
+          baselinePick: prediction.firstInning.baselinePick,
+          baselineProbability: Math.round(prediction.firstInning.baselineProbability ?? 0),
+          topRate: Math.round(prediction.firstInning.topRate ?? 0),
+          bottomRate: Math.round(prediction.firstInning.bottomRate ?? 0),
+          awayProfileLine: prediction.firstInning.awayProfileLine,
+          homeProfileLine: prediction.firstInning.homeProfileLine,
+          reasons: prediction.firstInning.agent?.reasons || prediction.firstInning.reasons || [],
         }
       : null,
-    quality: {
-      score: liveQuality(prediction),
-      note: 'Live score uses available MLB context. Market odds freshness is only available through optional odds API.',
+    quality: liveQualityReport(prediction, meta.fetchedAt),
+    context: {
+      standings: splitDashboardLine(prediction.contextLine),
+      splits: splitDashboardLine(prediction.matchupSplitLine),
+      advanced: splitDashboardLine(prediction.advancedLine),
+      pitcherRecent: splitDashboardLine(prediction.pitcherRecentLine),
+      bullpen: splitDashboardLine(prediction.bullpenLine),
+      injuries: prediction.injuryDetailLines || splitDashboardLine(prediction.injuryLine),
+      lineup: splitDashboardLine(prediction.lineupLine),
+      modelReference: prediction.modelReferenceLines || splitDashboardLine(prediction.modelReferenceLine),
     },
     reasons: prediction.agentAnalysis?.reasons || prediction.reasons || [],
     risk: prediction.agentAnalysis?.risk || '',
+    memoryNote: prediction.agentAnalysis?.memoryNote || '',
   };
 }
 
 async function livePredictions(dateYmd) {
   const predictions = await getMlbPredictions(dateYmd, storage.getMemory());
+  const fetchedAt = new Date().toISOString();
   return {
     date: dateYmd,
-    games: predictions.map(summarizeLivePrediction),
+    source: 'MLB StatsAPI live',
+    updatedAt: fetchedAt,
+    games: predictions.map((prediction) => summarizeLivePrediction(prediction, { dateYmd, fetchedAt })),
   };
 }
 
@@ -273,6 +437,9 @@ function statusPayload() {
       name: packageJson.name,
       version: packageJson.version,
       dashboardPort: port,
+      dashboardHost: host,
+      serverDate: dateInTimezone(config.timezone),
+      serverTime: new Date().toISOString(),
       cwd: process.cwd(),
     },
     config: {
@@ -366,15 +533,15 @@ function serveStatic(request, response, url) {
 
 function createDashboardServer() {
   return createServer(async (request, response) => {
-  const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
-  if (url.pathname.startsWith('/api/')) {
-    const handled = await routeApi(request, response, url);
-    if (!handled) sendError(response, 404, 'Unknown API route');
-    return;
-  }
+    const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+    if (url.pathname.startsWith('/api/')) {
+      const handled = await routeApi(request, response, url);
+      if (!handled) sendError(response, 404, 'Unknown API route');
+      return;
+    }
 
-  serveStatic(request, response, url);
-});
+    serveStatic(request, response, url);
+  });
 }
 
 export function startDashboard({ enabled = config.dashboard?.enabled !== false } = {}) {
