@@ -359,6 +359,83 @@ Total runs logic:
 - Untuk Telegram live, lineup diambil dari MLB boxscore jika sudah diumumkan. Jika belum ada, bot tetap memakai baseline offense/injury/recent form.
 - Park factor Telegram memakai baseline internal per ballpark agar tetap jalan tanpa API berbayar; file Python `src/park_factors.py` tetap bisa diganti dengan data park factor yang lebih baru.
 
+## MLB Data And Knowledge Layer
+
+Project ini sekarang punya layer Python tambahan untuk membuat Analyst Agent lebih pintar tanpa membuat bot bergantung pada API berbayar. Default tetap memakai CSV lokal, sedangkan sumber eksternal bisa diaktifkan opsional.
+
+Data sources:
+
+- `src/data_sources/pybaseball_client.py`: adapter optional untuk `pybaseball`, Statcast, Baseball Savant, FanGraphs, Baseball Reference, batting stats, pitching stats, team stats, dan historical data.
+- `src/data_sources/mlb_statsapi_client.py`: MLB Stats API langsung untuk schedule, game status, teams, players, probable pitchers, boxscore, live feed, standings, dan rosters.
+- `src/data_sources/retrosheet_loader.py`: loader Retrosheet-style game logs dan play-by-play dari CSV lokal.
+- `src/data_sources/statcast_loader.py`: loader Baseball Savant / Statcast CSV dengan exit velocity, launch angle, xwOBA, xBA, xSLG, hard-hit rate, barrel rate, pitch type, pitch velocity, dan pitcher movement.
+- `src/data_sources/odds_client.py`: optional The Odds API untuk moneyline, run line, totals, over odds, under odds, opening/current line, dan market movement.
+- `src/data_sources/weather_client.py`: optional OpenWeather atau NOAA/NWS untuk temperature, wind, humidity, air pressure, dan rain/weather context.
+- `src/data_sources/cache.py`: cache lokal di `data/cache/` supaya request tidak agresif dan tidak mengulang panggilan API yang sama.
+
+Knowledge/RAG-style modules:
+
+- `src/knowledge/baseball_knowledge.py`
+- `src/knowledge/retriever.py`
+- `data/knowledge/sabermetrics_glossary.md`
+- `data/knowledge/mlb_prediction_rules.md`
+- `data/knowledge/betting_market_explainer.md`
+- `data/knowledge/over_under_modeling.md`
+
+Agent tools:
+
+```python
+from src.agent_tools import (
+    get_today_games,
+    get_game_context,
+    get_probable_pitchers,
+    get_team_recent_form,
+    get_pitcher_recent_form,
+    get_team_offense_splits,
+    get_bullpen_usage,
+    get_park_factor,
+    get_weather_context,
+    get_market_odds,
+    predict_moneyline,
+    predict_total_runs,
+    explain_prediction,
+)
+
+print(explain_prediction(0))
+```
+
+Contoh knowledge question:
+
+```python
+from src.knowledge.baseball_knowledge import answer_baseball_question
+
+answer = answer_baseball_question("Why is FIP better than ERA for pitcher prediction?")
+print(answer["answer"])
+print(answer["sources"])
+```
+
+Optional API keys di `.env`:
+
+```env
+ODDS_API_KEY=
+THE_ODDS_API_KEY=
+OPENWEATHER_API_KEY=
+```
+
+Optional pybaseball install:
+
+```bash
+pip install pybaseball
+```
+
+Prinsip penting:
+
+- Jangan scrape website agresif.
+- Hormati rate limit dan terms setiap API.
+- External APIs optional; CSV sample tetap menjadi fallback.
+- Rolling stats untuk backtest harus digeser sebelum game target agar tidak data leakage.
+- Market odds dipakai untuk edge, bukan untuk menjamin hasil.
+
 Baseline weight:
 
 ```text
@@ -624,7 +701,11 @@ src/bullpen.py        Bullpen fatigue adjustment
 src/predict.py        CLI Python prediction
 src/odds.py           Implied probability dan edge
 src/data_loader.py    Loader CSV lokal
+src/agent_tools.py    Tool layer untuk Agent context/prediction/explanation
+src/data_sources/     Optional pybaseball, MLB StatsAPI, Retrosheet, Statcast, odds, weather clients
+src/knowledge/        Local RAG-style baseball knowledge retriever
 docs/analyst-playbook.md
+data/knowledge/       Sabermetric, prediction, betting, dan over/under knowledge files
 .env.example          Template konfigurasi
 requirements.txt      Dependency Python opsional
 tests/                Unit tests Python

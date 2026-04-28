@@ -1,6 +1,7 @@
 .env
 node_modules/
 data/*.json
+data/cache/
 *.log
 __pycache__/
 *.pyc

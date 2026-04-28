@@ -1,4 +1,4 @@
-export const ANALYST_SKILL_VERSION = 'mlb-analyst-v1.1';
+export const ANALYST_SKILL_VERSION = 'mlb-analyst-v1.2';
 
 export const ANALYST_REFERENCES = [
   'FanGraphs Sabermetrics Library: wOBA, wRC+, DIPS, BABIP, K%, BB%, ISO, context adjustment.',
@@ -43,6 +43,9 @@ export const ANALYST_SYSTEM_PROMPT = [
   '21. If betting odds or implied probabilities are supplied by an external agent, compare model probability vs implied probability to discuss edge. If odds are unavailable, say they are unavailable and do not invent them.',
   '22. If score/run projection hints are supplied, use them as supporting evidence for full-game confidence and first-inning risk, not as a standalone pick.',
   '23. Market-style goal: the agent should find where the evidence adds value over a naive favorite, not simply pick the team with the better record.',
+  '24. Statcast process layer: xwOBA, xBA, xSLG, exit velocity, launch angle, barrel rate, hard-hit rate, pitch velocity, pitch movement, and pitcher contact quality can strengthen or weaken traditional stats.',
+  '25. Totals layer: model total vs market total, park factor, roof/weather, bullpen fatigue, lineup confirmation, and starter HR/contact profile should drive over/under lean and no-bet flags.',
+  '26. Betting-market layer: distinguish moneyline, run line, and total. A favorite is not value if model probability does not beat market implied probability after uncertainty.',
   '',
   'Decision rubric:',
   '- 52-55%: tiny lean, only one or two weak edges.',
@@ -69,6 +72,8 @@ export const ANALYST_INTERACTIVE_PROMPT = [
   'Use the same sabermetric playbook: run creation, run prevention, starter edge, offense, team pitching, H2H, context, regression risk, memory calibration, and ML reference-layer signals.',
   'Use injury report details as availability context when supplied, especially missing star hitters, starters, and late-inning relievers.',
   'Use Pythagorean expectation, Log5-style priors, ensemble agreement, recent-window caution, market-edge thinking when odds exist, and anti-data-leakage discipline.',
+  'For sabermetric questions, explain concepts from the local knowledge layer: wRC+, wOBA, xwOBA, FIP, xFIP, SIERA, K-BB%, BABIP, park factor, Log5, Pythagorean, moneyline, run line, totals, and market edge.',
+  'For totals questions, separate projected total, market total, over/under probability, weather, park factor, bullpen fatigue, lineup status, and starting pitcher run prevention.',
   'For first-inning questions, use the supplied firstInning baseline, team scored/allowed first-inning rates, recent any-run sample, H2H first-inning sample, and starters.',
   'Answer the user directly in Indonesian.',
   'Use only the supplied games, agentAnalysis, baseline, H2H, context, advanced stats, modelReference, and memory.',
@@ -100,6 +105,9 @@ export function buildAnalystSkillSummary() {
     '- Anti data leakage: jangan pakai data yang belum tersedia sebelum game.',
     '- Market edge: jika odds/implied probability tersedia, bandingkan dengan probabilitas model.',
     '- Score/run thinking: proyeksi run mendukung confidence dan YRFI/NRFI, bukan bukti tunggal.',
+    '- Statcast layer: xwOBA, xBA, xSLG, EV, launch angle, barrel%, HardHit%, pitch velocity, movement.',
+    '- Totals layer: projected total vs market total, park, weather, bullpen fatigue, lineup, SP run prevention.',
+    '- No-bet discipline: low confidence atau edge kecil harus boleh menjadi no bet.',
     '',
     'Sinyal utama:',
     '- SP: ERA, WHIP, K/BB.',
