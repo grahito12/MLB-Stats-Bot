@@ -1060,6 +1060,40 @@ function injuryDetailLines(team, injuries) {
   });
 }
 
+function referenceEdgeLabel(away, home, homeProbability) {
+  const homeProb = Math.round(homeProbability);
+  const awayProb = 100 - homeProb;
+  return homeProb >= awayProb
+    ? `${home.abbreviation || home.name} ${homeProb}%`
+    : `${away.abbreviation || away.name} ${awayProb}%`;
+}
+
+function buildModelReferenceLines({
+  away,
+  home,
+  awayPythagoreanPct,
+  homePythagoreanPct,
+  homeSeasonLog5,
+  homePythagoreanLog5,
+  homeRecentLog5,
+  homeReferenceBlend
+}) {
+  const awayPythPct = Math.round(awayPythagoreanPct * 100);
+  const homePythPct = Math.round(homePythagoreanPct * 100);
+  const direction =
+    homeReferenceBlend >= 0.5
+      ? `${home.name} (${percent(homeReferenceBlend * 100)})`
+      : `${away.name} (${percent((1 - homeReferenceBlend) * 100)})`;
+
+  return [
+    `Arah edge ML: ${direction}`,
+    `Pythagorean strength: ${away.abbreviation || away.name} ${awayPythPct}% vs ${home.abbreviation || home.name} ${homePythPct}%.`,
+    `Log5 season: ${referenceEdgeLabel(away, home, homeSeasonLog5 * 100)}.`,
+    `Log5 Pythagorean: ${referenceEdgeLabel(away, home, homePythagoreanLog5 * 100)}.`,
+    `Recent form Log5: ${referenceEdgeLabel(away, home, homeRecentLog5 * 100)}.`
+  ];
+}
+
 function predictGame(
   game,
   teamStats,
@@ -1199,6 +1233,16 @@ function predictGame(
     awayStarter,
     probHome: homeProbability
   });
+  const modelReferenceLines = buildModelReferenceLines({
+    away,
+    home,
+    awayPythagoreanPct,
+    homePythagoreanPct,
+    homeSeasonLog5,
+    homePythagoreanLog5,
+    homeRecentLog5,
+    homeReferenceBlend
+  });
   const firstInning = buildFirstInningProjection({
     away,
     home,
@@ -1230,7 +1274,8 @@ function predictGame(
       away: awayInjuries,
       home: homeInjuries
     },
-    modelReferenceLine: `${away.abbreviation || away.name} Pyth ${percent(awayPythagoreanPct * 100)} | ${home.abbreviation || home.name} Pyth ${percent(homePythagoreanPct * 100)} | Log5 home season ${percent(homeSeasonLog5 * 100)}, pyth ${percent(homePythagoreanLog5 * 100)}, recent ${percent(homeRecentLog5 * 100)}`,
+    modelReferenceLine: modelReferenceLines.join(' | '),
+    modelReferenceLines,
     modelReference: {
       awayPythagoreanPct: Math.round(awayPythagoreanPct * 100),
       homePythagoreanPct: Math.round(homePythagoreanPct * 100),
@@ -1419,7 +1464,9 @@ export function formatPredictions(
     const bullpenLines = splitInfoLine(item.bullpenLine);
     const pitcherRecentLines = splitInfoLine(item.pitcherRecentLine);
     const advancedLines = splitInfoLine(item.advancedLine);
-    const modelReferenceLines = splitInfoLine(item.modelReferenceLine);
+    const modelReferenceLines = item.modelReferenceLines?.length
+      ? item.modelReferenceLines.map((line) => `• ${line}`)
+      : splitInfoLine(item.modelReferenceLine);
     const injuryLines = item.injuryDetailLines?.length
       ? item.injuryDetailLines.map((line) => `• ${line}`)
       : splitInfoLine(item.injuryLine);

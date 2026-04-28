@@ -288,6 +288,9 @@ function formatLivePrediction(dateYmd, prediction) {
   const injuryLines = prediction.injuryDetailLines?.length
     ? prediction.injuryDetailLines.map((line) => `• ${line}`)
     : [`• ${prediction.injuryLine || 'Data injury tidak tersedia.'}`];
+  const modelReferenceLines = prediction.modelReferenceLines?.length
+    ? prediction.modelReferenceLines.map((line) => `• ${line}`)
+    : [`• ${prediction.modelReferenceLine}`];
 
   return [
     '📊 MLB Prediction',
@@ -319,8 +322,8 @@ function formatLivePrediction(dateYmd, prediction) {
     '🏥 Injury Report',
     ...injuryLines,
     '',
-    'ML Reference',
-    prediction.modelReferenceLine,
+    '🧠 ML Reference',
+    ...modelReferenceLines,
     '',
     'First Inning',
     `Will there be a run in the 1st? ${firstLabel} ${percent(firstProbability)}`,
