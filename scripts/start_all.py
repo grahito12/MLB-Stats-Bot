@@ -75,10 +75,41 @@ def port_is_open(host: str, port: str) -> bool:
         return False
 
 
-def run_api_preflight() -> bool:
+def python_command() -> str:
+    return os.environ.get("PYTHON_BIN") or sys.executable
+
+
+def venv_python() -> Path:
+    if os.name == "nt":
+        return ROOT / ".venv" / "Scripts" / "python.exe"
+    return ROOT / ".venv" / "bin" / "python"
+
+
+def run_python_setup() -> bool:
+    print("FastAPI/Uvicorn not found. Running Python backend setup...", flush=True)
+    result = subprocess.run(
+        [sys.executable, "scripts/setup_python.py"],
+        cwd=ROOT,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(
+            "Python backend setup failed. On Ubuntu, run `sudo apt install -y python3-venv` "
+            "then run `npm run setup:python`.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+    os.environ["PYTHON_BIN"] = str(venv_python())
+    return True
+
+
+def run_api_preflight(allow_setup: bool = True) -> bool:
     result = subprocess.run(
         [
-            sys.executable,
+            python_command(),
             "-c",
             "import fastapi, uvicorn; import src.dashboard_api; print('Dashboard API import OK')",
         ],
@@ -95,8 +126,10 @@ def run_api_preflight() -> bool:
         print(result.stdout.strip(), file=sys.stderr, flush=True)
     if result.stderr.strip():
         print(result.stderr.strip(), file=sys.stderr, flush=True)
+    if allow_setup and "No module named" in result.stderr:
+        return run_python_setup() and run_api_preflight(allow_setup=False)
     print(
-        "Fix: run `python3 -m pip install -r requirements.txt` from the project root, "
+        "Fix: run `npm run setup:python` from the project root, "
         "or set PYTHON_BIN to the Python that has FastAPI/Uvicorn installed.",
         file=sys.stderr,
         flush=True,
@@ -123,10 +156,10 @@ def start_dashboard_api(api_host: str, api_port: str) -> ManagedProcess | None:
 
     managed = start_process(
         "Dashboard API",
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
+            [
+                python_command(),
+                "-m",
+                "uvicorn",
             "src.dashboard_api:app",
             "--host",
             api_host,

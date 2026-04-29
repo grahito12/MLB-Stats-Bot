@@ -43,11 +43,21 @@ def update_env() -> None:
 
 def main() -> int:
     print(f"Creating Python virtualenv: {VENV_DIR}", flush=True)
-    venv.EnvBuilder(with_pip=True, clear=False).create(VENV_DIR)
+    try:
+        venv.EnvBuilder(with_pip=True, clear=False).create(VENV_DIR)
+    except Exception as error:
+        print(f"Could not create virtualenv: {error}", file=sys.stderr, flush=True)
+        if os.name != "nt":
+            print("Ubuntu fix: sudo apt install -y python3-venv", file=sys.stderr, flush=True)
+        return 1
 
     python = str(python_bin())
-    subprocess.check_call([python, "-m", "pip", "install", "--upgrade", "pip"], cwd=ROOT)
-    subprocess.check_call([python, "-m", "pip", "install", "-r", "requirements.txt"], cwd=ROOT)
+    try:
+        subprocess.check_call([python, "-m", "pip", "install", "--upgrade", "pip"], cwd=ROOT)
+        subprocess.check_call([python, "-m", "pip", "install", "-r", "requirements.txt"], cwd=ROOT)
+    except subprocess.CalledProcessError as error:
+        print(f"Python dependency install failed with code {error.returncode}.", file=sys.stderr, flush=True)
+        return error.returncode
     update_env()
 
     print(f"Python backend ready: {python}", flush=True)
