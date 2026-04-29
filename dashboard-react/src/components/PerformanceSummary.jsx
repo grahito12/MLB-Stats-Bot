@@ -1,17 +1,22 @@
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { number, percent } from '../utils.js';
-
-function Metric({ label, value }) {
-  return (
-    <div className="rounded-lg border border-line bg-white p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-bold text-ink">{value}</p>
-    </div>
-  );
-}
+import PerformanceCard from './PerformanceCard.jsx';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card.jsx';
 
 function SmallTable({ title, rows, columns }) {
   return (
-    <section className="rounded-lg border border-line bg-white p-4">
+    <Card>
+      <CardContent>
       <h3 className="mb-3 text-sm font-bold text-ink">{title}</h3>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
@@ -27,7 +32,22 @@ function SmallTable({ title, rows, columns }) {
           </tbody>
         </table>
       </div>
-    </section>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ChartCard({ title, description, children }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        {description ? <CardDescription>{description}</CardDescription> : null}
+      </CardHeader>
+      <CardContent>
+        <div className="h-64">{children}</div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -36,14 +56,39 @@ export default function PerformanceSummary({ performance }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Bets Taken" value={overall.bets_taken || 0} />
-        <Metric label="Win Rate" value={percent(overall.win_rate)} />
-        <Metric label="ROI" value={percent(overall.roi)} />
-        <Metric label="Average Edge" value={percent(overall.average_edge)} />
-        <Metric label="Average CLV" value={number(overall.average_clv, 2)} />
-        <Metric label="Brier Score" value={number(overall.brier_score, 3)} />
-        <Metric label="Log Loss" value={number(overall.log_loss, 3)} />
-        <Metric label="CLV Hit Rate" value={percent(overall.clv_hit_rate)} />
+        <PerformanceCard label="Bets Taken" value={overall.bets_taken || 0} helper="Settled model plays" />
+        <PerformanceCard label="Win Rate" value={percent(overall.win_rate)} helper="Win/loss only" />
+        <PerformanceCard label="ROI" value={percent(overall.roi)} helper="Per one-unit stake" />
+        <PerformanceCard label="Average Edge" value={percent(overall.average_edge)} helper="Model vs market" />
+        <PerformanceCard label="Average CLV" value={number(overall.average_clv, 2)} helper="Closing line value" />
+        <PerformanceCard label="Brier Score" value={number(overall.brier_score, 3)} helper="Probability accuracy" />
+        <PerformanceCard label="Log Loss" value={number(overall.log_loss, 3)} helper="Penalty for overconfidence" />
+        <PerformanceCard label="CLV Hit Rate" value={percent(overall.clv_hit_rate)} helper="Beat close rate" />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ChartCard title="Performance by Market" description="Higher ROI is better, but sample size matters.">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={performance?.by_market || []}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="market" tickLine={false} axisLine={false} />
+              <YAxis tickLine={false} axisLine={false} />
+              <Tooltip />
+              <Bar dataKey="roi" name="ROI %" fill="#2563eb" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+        <ChartCard title="Calibration" description="Actual win rate should track expected probability over time.">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={performance?.calibration || []}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="bucket" tickLine={false} axisLine={false} />
+              <YAxis tickLine={false} axisLine={false} />
+              <Tooltip />
+              <Line dataKey="expected" name="Expected %" stroke="#64748b" strokeWidth={2} dot={false} />
+              <Line dataKey="actual" name="Actual %" stroke="#16a34a" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <SmallTable

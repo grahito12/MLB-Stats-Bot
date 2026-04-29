@@ -1,13 +1,21 @@
-import { Download, RefreshCw } from 'lucide-react';
+import { CalendarDays, CircleAlert, CircleSlash, Gauge, Target, Trophy } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api, exportUrl } from './api.js';
-import { lower, relativeTime } from './utils.js';
+import { lower, signed } from './utils.js';
+import BacktestForm from './components/BacktestForm.jsx';
 import BacktestTable from './components/BacktestTable.jsx';
+import EmptyState from './components/EmptyState.jsx';
+import FilterToolbar from './components/FilterToolbar.jsx';
 import GameCard from './components/GameCard.jsx';
 import HistoryTable from './components/HistoryTable.jsx';
+import Layout from './components/Layout.jsx';
+import LoadingState from './components/LoadingState.jsx';
 import PerformanceSummary from './components/PerformanceSummary.jsx';
-import PredictionBadge from './components/PredictionBadge.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
+import SummaryCard from './components/SummaryCard.jsx';
+import { Button } from './components/ui/button.jsx';
+import { Card, CardContent } from './components/ui/card.jsx';
+import { Field, Input, Select } from './components/ui/form.jsx';
 
 const tabs = ['Today', 'History', 'Backtest', 'Performance', 'Settings'];
 const filters = [
@@ -24,22 +32,14 @@ const filters = [
 ];
 const sorts = [
   ['time', 'Game time'],
-  ['moneyline_edge', 'Highest moneyline edge'],
-  ['total_edge', 'Highest total edge'],
+  ['highest_edge', 'Highest edge'],
+  ['moneyline_edge', 'Moneyline edge'],
+  ['total_edge', 'Total edge'],
   ['confidence', 'Confidence'],
   ['quality', 'Data quality score'],
   ['total_diff', 'Projected total difference'],
   ['movement', 'Market movement'],
 ];
-
-function HeaderMetric({ label, value }) {
-  return (
-    <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-bold text-ink">{value}</p>
-    </div>
-  );
-}
 
 function useDashboardData() {
   const [today, setToday] = useState(null);
@@ -133,6 +133,11 @@ function sortGames(games, sort) {
   copy.sort((a, b) => {
     if (sort === 'moneyline_edge') return Math.abs(Number(b.moneyline?.edge) || 0) - Math.abs(Number(a.moneyline?.edge) || 0);
     if (sort === 'total_edge') return Math.abs(Number(b.totals?.edge) || 0) - Math.abs(Number(a.totals?.edge) || 0);
+    if (sort === 'highest_edge') {
+      const edgeB = Math.max(Math.abs(Number(b.moneyline?.edge) || 0), Math.abs(Number(b.totals?.edge) || 0));
+      const edgeA = Math.max(Math.abs(Number(a.moneyline?.edge) || 0), Math.abs(Number(a.totals?.edge) || 0));
+      return edgeB - edgeA;
+    }
     if (sort === 'confidence') return (confidenceScore[lower(b.moneyline?.confidence)] || 0) - (confidenceScore[lower(a.moneyline?.confidence)] || 0);
     if (sort === 'quality') return (Number(b.data_quality?.score) || 0) - (Number(a.data_quality?.score) || 0);
     if (sort === 'total_diff') return Math.abs(Number(b.totals?.difference) || 0) - Math.abs(Number(a.totals?.difference) || 0);
@@ -146,50 +151,50 @@ function TodayView({ today, source, setSource, date, setDate, loadToday, loading
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState('time');
   const games = useMemo(() => sortGames(filterGames(today?.games || [], filter), sort), [today, filter, sort]);
+  const highestEdge = useMemo(() => {
+    const edges = (today?.games || []).flatMap((game) => [
+      Math.abs(Number(game.moneyline?.edge) || 0),
+      Math.abs(Number(game.totals?.edge) || 0),
+    ]);
+    return edges.length ? Math.max(...edges) : 0;
+  }, [today]);
+  const hasWeakData = (today?.games || []).some((game) =>
+    ['missing', 'stale', 'unavailable'].some((token) =>
+      [game.data_quality?.lineup, game.data_quality?.weather, game.data_quality?.odds].some((value) => lower(value).includes(token))
+    )
+  );
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-6">
-        <HeaderMetric label="Total Games" value={today?.summary?.total_games || 0} />
-        <HeaderMetric label="BET" value={today?.summary?.bet_count || 0} />
-        <HeaderMetric label="LEAN" value={today?.summary?.lean_count || 0} />
-        <HeaderMetric label="NO BET" value={today?.summary?.no_bet_count || 0} />
-        <HeaderMetric label="Avg Quality" value={`${today?.summary?.average_data_quality || 0}/100`} />
-        <HeaderMetric label="Last Updated" value={relativeTime(today?.last_updated)} />
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <SummaryCard label="Games Today" value={today?.summary?.total_games || 0} helper="Current slate" icon={CalendarDays} />
+        <SummaryCard label="BET" value={today?.summary?.bet_count || 0} helper="High edge + quality" icon={Trophy} />
+        <SummaryCard label="LEAN" value={today?.summary?.lean_count || 0} helper="Watchlist only" icon={Target} />
+        <SummaryCard label="NO BET" value={today?.summary?.no_bet_count || 0} helper="Protected by QC" icon={CircleSlash} />
+        <SummaryCard label="Avg Quality" value={`${today?.summary?.average_data_quality || 0}/100`} helper="Data trust score" icon={Gauge} />
+        <SummaryCard label="Highest Edge" value={signed(highestEdge, '%')} helper="Largest absolute edge" icon={CircleAlert} />
       </div>
 
-      <section className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-2">
-            {filters.map(([value, label]) => (
-              <button key={value} className={`rounded-md px-3 py-2 text-sm font-semibold ${filter === value ? 'bg-blue-600 text-white' : 'border border-line text-ink'}`} onClick={() => setFilter(value)} type="button">
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <input className="rounded-md border border-line px-3 py-2 text-sm" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
-            <select className="rounded-md border border-line px-3 py-2 text-sm" value={source} onChange={(event) => setSource(event.target.value)}>
-              <option value="live">Live</option>
-              <option value="sample">Sample</option>
-              <option value="mock">Mock</option>
-            </select>
-            <select className="rounded-md border border-line px-3 py-2 text-sm" value={sort} onChange={(event) => setSort(event.target.value)}>
-              {sorts.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-            <button className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => loadToday(source)} type="button">
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-            <a className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-semibold text-ink" href={exportUrl('today', { source, date })}>
-              <Download size={16} />
-              CSV
-            </a>
-          </div>
-        </div>
-        {today?.warning ? <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{today.warning}</p> : null}
-      </section>
+      <FilterToolbar
+        filters={filters}
+        activeFilter={filter}
+        onFilterChange={setFilter}
+        sort={sort}
+        sorts={sorts}
+        onSortChange={setSort}
+        source={source}
+        onSourceChange={setSource}
+        date={date}
+        onDateChange={setDate}
+        loading={loading}
+        onRefresh={() => loadToday(source)}
+        exportHref={exportUrl('today', { source, date })}
+      />
+      {today?.warning ? <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{today.warning}</p> : null}
+      {hasWeakData ? <p className="rounded-md bg-slate-100 px-3 py-2 text-sm text-slate-700">Some games have missing, unavailable, or stale context. Predictions are intentionally conservative.</p> : null}
 
       <div className="space-y-4">
+        {loading && !games.length ? <LoadingState label="Loading today's MLB games..." /> : null}
+        {!loading && !games.length ? <EmptyState title="No games found" message="No games matched the selected date, source, or filter." /> : null}
         {games.map((game) => <GameCard key={game.id} game={game} />)}
       </div>
     </div>
@@ -216,18 +221,20 @@ function HistoryView({ history }) {
   });
   return (
     <section className="space-y-4">
-      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="grid gap-1 text-sm font-semibold">Start<input className="rounded-md border border-line px-3 py-2" type="date" value={filters.start} onChange={(event) => setFilters({ ...filters, start: event.target.value })} /></label>
-          <label className="grid gap-1 text-sm font-semibold">End<input className="rounded-md border border-line px-3 py-2" type="date" value={filters.end} onChange={(event) => setFilters({ ...filters, end: event.target.value })} /></label>
-          <label className="grid gap-1 text-sm font-semibold">Market<select className="rounded-md border border-line px-3 py-2" value={filters.market} onChange={(event) => setFilters({ ...filters, market: event.target.value })}><option value="all">All</option><option value="moneyline">Moneyline</option><option value="totals">Totals</option><option value="run line">Run line</option></select></label>
-          <label className="grid gap-1 text-sm font-semibold">Result<select className="rounded-md border border-line px-3 py-2" value={filters.result} onChange={(event) => setFilters({ ...filters, result: event.target.value })}><option value="all">All</option><option value="win">Win</option><option value="loss">Loss</option><option value="push">Push</option></select></label>
-          <label className="grid gap-1 text-sm font-semibold">Confidence<select className="rounded-md border border-line px-3 py-2" value={filters.confidence} onChange={(event) => setFilters({ ...filters, confidence: event.target.value })}><option value="all">All</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
-          <label className="grid gap-1 text-sm font-semibold">Decision<select className="rounded-md border border-line px-3 py-2" value={filters.decision} onChange={(event) => setFilters({ ...filters, decision: event.target.value })}><option value="all">All</option><option value="BET">BET</option><option value="LEAN">LEAN</option><option value="NO BET">NO BET</option></select></label>
-          <a className="rounded-md border border-line px-3 py-2 text-sm font-semibold" href={exportUrl('history')}>Export CSV</a>
-        </div>
-      </div>
-      <HistoryTable rows={rows} />
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Start"><Input type="date" value={filters.start} onChange={(event) => setFilters({ ...filters, start: event.target.value })} /></Field>
+            <Field label="End"><Input type="date" value={filters.end} onChange={(event) => setFilters({ ...filters, end: event.target.value })} /></Field>
+            <Field label="Market"><Select value={filters.market} onChange={(event) => setFilters({ ...filters, market: event.target.value })}><option value="all">All</option><option value="moneyline">Moneyline</option><option value="totals">Totals</option><option value="run line">Run line</option></Select></Field>
+            <Field label="Result"><Select value={filters.result} onChange={(event) => setFilters({ ...filters, result: event.target.value })}><option value="all">All</option><option value="win">Win</option><option value="loss">Loss</option><option value="push">Push</option></Select></Field>
+            <Field label="Confidence"><Select value={filters.confidence} onChange={(event) => setFilters({ ...filters, confidence: event.target.value })}><option value="all">All</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></Select></Field>
+            <Field label="Decision"><Select value={filters.decision} onChange={(event) => setFilters({ ...filters, decision: event.target.value })}><option value="all">All</option><option value="BET">BET</option><option value="LEAN">LEAN</option><option value="NO BET">NO BET</option></Select></Field>
+            <Button asChild variant="secondary"><a href={exportUrl('history')}>Export CSV</a></Button>
+          </div>
+        </CardContent>
+      </Card>
+      {rows.length ? <HistoryTable rows={rows} /> : <EmptyState title="No history rows" message="No prediction history matched the selected filters." />}
     </section>
   );
 }
@@ -245,16 +252,7 @@ function BacktestView({ backtest, setBacktest }) {
   }
   return (
     <section className="space-y-4">
-      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="grid gap-1 text-sm font-semibold">Season<input className="rounded-md border border-line px-3 py-2" type="number" value={form.season} onChange={(event) => setForm({ ...form, season: Number(event.target.value) })} /></label>
-          <label className="grid gap-1 text-sm font-semibold">Start date<input className="rounded-md border border-line px-3 py-2" type="date" value={form.start_date} onChange={(event) => setForm({ ...form, start_date: event.target.value })} /></label>
-          <label className="grid gap-1 text-sm font-semibold">End date<input className="rounded-md border border-line px-3 py-2" type="date" value={form.end_date} onChange={(event) => setForm({ ...form, end_date: event.target.value })} /></label>
-          <label className="grid gap-1 text-sm font-semibold">Market<select className="rounded-md border border-line px-3 py-2" value={form.market_type} onChange={(event) => setForm({ ...form, market_type: event.target.value })}><option value="moneyline">Moneyline</option><option value="totals">Totals</option></select></label>
-          <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white" onClick={run} type="button">{running ? 'Running...' : 'Run backtest'}</button>
-          <a className="rounded-md border border-line px-4 py-2 text-sm font-semibold" href={exportUrl('backtest')}>Export CSV</a>
-        </div>
-      </div>
+      <BacktestForm form={form} onChange={setForm} onRun={run} running={running} exportHref={exportUrl('backtest')} />
       <BacktestTable result={backtest} />
     </section>
   );
@@ -275,36 +273,21 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-canvas">
-      <header className="sticky top-0 z-10 border-b border-line bg-canvas/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">MLB Stats Bot</p>
-            <h1 className="text-2xl font-bold text-ink">Prediction Control Center</h1>
-          </div>
-          <nav className="flex flex-wrap gap-2">
-            {tabs.map((tab) => (
-              <button key={tab} className={`rounded-md px-3 py-2 text-sm font-semibold ${activeTab === tab ? 'bg-blue-600 text-white' : 'border border-line bg-white text-ink'}`} onClick={() => setActiveTab(tab)} type="button">
-                {tab}
-              </button>
-            ))}
-          </nav>
-        </div>
-      </header>
-
-      <div className="mx-auto max-w-7xl px-4 py-5">
+    <Layout
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      lastUpdated={data.today?.last_updated}
+      loading={data.loading}
+      onRefresh={() => data.loadToday(data.source)}
+    >
         {data.error ? <div className="mb-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800">{data.error}</div> : null}
         {activeTab === 'Today' ? <TodayView {...data} /> : null}
         {activeTab === 'History' ? <HistoryView history={data.history} /> : null}
         {activeTab === 'Backtest' ? <BacktestView backtest={data.backtest} setBacktest={data.setBacktest} /> : null}
         {activeTab === 'Performance' ? <PerformanceSummary performance={data.performance} /> : null}
         {activeTab === 'Settings' ? <SettingsPanel settings={data.settings || {}} onChange={data.setSettings} onSave={saveSettings} saving={saving} /> : null}
-        <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-500">
-          <PredictionBadge>{data.loading ? 'Loading' : 'Ready'}</PredictionBadge>
-          <PredictionBadge>{data.source}</PredictionBadge>
-          <span>Auto-refresh is conservative and uses the configured interval.</span>
-        </div>
-      </div>
-    </main>
+        <p className="mt-4 text-xs text-slate-500">Auto-refresh is conservative and uses the configured interval. Source: {data.source}.</p>
+    </Layout>
   );
 }

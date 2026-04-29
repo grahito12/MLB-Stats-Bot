@@ -15,7 +15,7 @@ export default function HistoryTable({ rows }) {
         </thead>
         <tbody className="divide-y divide-line">
           {rows.map((row, index) => (
-            <tr key={`${row.date}-${row.matchup}-${index}`}>
+            <tr key={`${row.date}-${row.matchup}-${index}`} className="transition-colors hover:bg-slate-50">
               <td className="px-3 py-3">{row.date}</td>
               <td className="px-3 py-3 font-semibold text-ink">{row.matchup}</td>
               <td className="px-3 py-3">{row.market_type}</td>
@@ -25,7 +25,7 @@ export default function HistoryTable({ rows }) {
               <td className="px-3 py-3"><EdgeIndicator value={row.edge} /></td>
               <td className="px-3 py-3">{row.closing_line || '-'}</td>
               <td className="px-3 py-3"><PredictionBadge>{row.result}</PredictionBadge></td>
-              <td className="px-3 py-3">{number(row.profit_loss, 2)}</td>
+              <td className={`px-3 py-3 font-semibold ${Number(row.profit_loss) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{number(row.profit_loss, 2)}</td>
               <td className="px-3 py-3">{number(row.clv, 2)}</td>
             </tr>
           ))}

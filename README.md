@@ -323,6 +323,9 @@ Dashboard baru tersedia sebagai prediction control center profesional:
 - Backend FastAPI: `src/dashboard_api.py`
 - Service/business logic: `src/dashboard_service.py`
 - Frontend React + Tailwind: `dashboard-react/`
+- UI design system ala `shadcn/ui`: reusable `Button`, `Card`, `Badge`, `Input`, `Select`, `Progress`, dan `Switch`.
+- Icons: `lucide-react`.
+- Charts: `recharts` untuk performance, ROI, dan calibration view.
 - Mock data: `data/dashboard_mock.json`
 - Settings threshold lokal: `data/dashboard_settings.json`
 
