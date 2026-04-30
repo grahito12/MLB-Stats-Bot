@@ -721,6 +721,10 @@ function formatMemorySummary() {
       return `${key}: ${value.correct}/${value.total} (${accuracy}%)`;
     })
     .join('\n');
+  const matchupMemory = summary.matchupMemory || { totalMatchups: 0, recent: [] };
+  const matchupLines = (matchupMemory.recent || [])
+    .map((item) => `- ${item.note}`)
+    .join('\n');
 
   return [
     '🧠 MLB Model Memory',
@@ -740,6 +744,10 @@ function formatMemorySummary() {
     `Akurasi: ${summary.firstInning.accuracy}%`,
     `YES: ${summary.firstInning.byPick.YES.correct}/${summary.firstInning.byPick.YES.total}`,
     `NO: ${summary.firstInning.byPick.NO.correct}/${summary.firstInning.byPick.NO.total}`,
+    '',
+    'Matchup memory:',
+    `Tracked matchups: ${matchupMemory.totalMatchups}`,
+    matchupLines || 'Belum ada matchup berulang yang tersimpan.',
     '',
     'Recent learning:',
     summary.recentLog.length
@@ -948,8 +956,8 @@ function formatPostGameRecap(dateYmd, evaluations) {
         : null;
     const memoryLine = learned
       ? correct
-        ? 'Memory: pick benar, confidence pattern diperkuat kecil.'
-        : `Memory: pick salah disimpan; bias ${prediction.pick.abbreviation || prediction.pick.name} turun, ${result.winner.abbreviation || result.winner.name} naik.`
+        ? 'Memory: pick benar; matchup pattern disimpan sebagai sinyal kecil.'
+        : `Memory: pick salah disimpan; matchup pattern mencatat ${result.winner.abbreviation || result.winner.name} menang tanpa auto-bias berlebihan.`
       : 'Memory: game ini sudah pernah diproses.';
 
     lines.push(

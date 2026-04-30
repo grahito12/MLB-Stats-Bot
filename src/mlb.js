@@ -91,7 +91,90 @@ function seasonStartDate(season) {
 }
 
 function teamMemoryBias(modelMemory, teamId) {
-  return clamp(toNumber(modelMemory?.teamBias?.[String(teamId)], 0), -0.18, 0.18);
+  return clamp(toNumber(modelMemory?.teamBias?.[String(teamId)], 0), -0.08, 0.08);
+}
+
+function sortTeamIds(left, right) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber;
+  return String(left).localeCompare(String(right));
+}
+
+function matchupMemoryKey(teamAId, teamBId) {
+  return [String(teamAId), String(teamBId)].sort(sortTeamIds).join(':');
+}
+
+function safeTeamLabel(team) {
+  return team?.abbreviation || team?.name || 'team';
+}
+
+function buildMatchupMemoryContext(modelMemory, awayTeam, homeTeam) {
+  const key = matchupMemoryKey(awayTeam.id, homeTeam.id);
+  const entry = modelMemory?.matchupMemory?.[key];
+  if (!entry) {
+    return {
+      key,
+      games: 0,
+      edge: 0,
+      note: 'Belum ada matchup memory tersimpan.',
+      recentGames: []
+    };
+  }
+
+  const recentGames = (entry.recentGames || []).slice(0, 5);
+  const weights = [0.03, 0.022, 0.015, 0.01, 0.006];
+  let sequenceEdge = 0;
+  let missedEdge = 0;
+
+  recentGames.forEach((game, index) => {
+    const weight = weights[index] || 0.004;
+    const winnerId = String(game.winner?.id || '');
+    if (winnerId === String(homeTeam.id)) sequenceEdge += weight;
+    if (winnerId === String(awayTeam.id)) sequenceEdge -= weight;
+
+    if (game.correct === false) {
+      if (winnerId === String(homeTeam.id)) missedEdge += weight * 0.5;
+      if (winnerId === String(awayTeam.id)) missedEdge -= weight * 0.5;
+    }
+  });
+
+  let edge = sequenceEdge + clamp(missedEdge, -0.03, 0.03);
+  const averageMargin = toNumber(entry.averageMargin, 0);
+  const alternating = Boolean(entry.alternating);
+  const streakLength = Number(entry.currentStreak?.length || 0);
+
+  if (alternating) edge *= 0.45;
+  if (averageMargin > 0 && averageMargin <= 1.5) edge *= 0.6;
+  if (streakLength >= 3) edge *= 0.8;
+
+  const finalEdge = clamp(edge, -0.08, 0.08);
+  const edgeTeam =
+    finalEdge > 0.01 ? safeTeamLabel(homeTeam) : finalEdge < -0.01 ? safeTeamLabel(awayTeam) : 'netral';
+  const note =
+    entry.note ||
+    (recentGames.length
+      ? `Matchup memory ${recentGames.length} game recent, edge kecil ke ${edgeTeam}.`
+      : 'Belum ada matchup memory tersimpan.');
+
+  return {
+    key,
+    games: entry.totalGames || recentGames.length,
+    edge: finalEdge,
+    edgeTeam,
+    note,
+    currentStreak: entry.currentStreak || null,
+    alternating,
+    averageMargin,
+    pickStats: entry.pickStats || { total: 0, correct: 0 },
+    recentGames: recentGames.map((game) => ({
+      dateYmd: game.dateYmd,
+      winner: game.winner,
+      loser: game.loser,
+      margin: game.margin,
+      correct: game.correct
+    }))
+  };
 }
 
 function leagueRecordPct(record) {
@@ -1615,6 +1698,7 @@ function predictGame(
     homeSeasonLog5 * 0.45 + homePythagoreanLog5 * 0.35 + homeRecentLog5 * 0.2;
   const homeMemoryBias = teamMemoryBias(modelMemory, homeTeam.id);
   const awayMemoryBias = teamMemoryBias(modelMemory, awayTeam.id);
+  const matchupMemory = buildMatchupMemoryContext(modelMemory, awayTeam, homeTeam);
 
   const winPctEdge = homeWinPct - awayWinPct;
   const offenseEdge =
@@ -1636,7 +1720,7 @@ function predictGame(
   const pythagoreanEdge = homePythagoreanPct - awayPythagoreanPct;
   const log5Edge = homeReferenceBlend - 0.5;
   const h2hEdge = headToHead?.games > 0 ? (headToHead.homeProbability - 50) / 50 : 0;
-  const memoryEdge = homeMemoryBias - awayMemoryBias;
+  const memoryEdge = (homeMemoryBias - awayMemoryBias) * 0.35 + matchupMemory.edge;
   const edge =
     winPctEdge * 0.65 +
     offenseEdge * 0.22 +
@@ -1767,8 +1851,11 @@ function predictGame(
     },
     memoryAdjustment: {
       away: awayMemoryBias,
-      home: homeMemoryBias
+      home: homeMemoryBias,
+      matchup: matchupMemory.edge,
+      note: matchupMemory.note
     },
+    matchupMemory,
     headToHead,
     firstInning,
     winner: homeProbability >= awayProbability ? home : away,
@@ -1944,7 +2031,10 @@ export function formatPredictions(
     const displayProb = displayedProbabilities(item);
     const pick = agentPick(item);
     const agentActive = Boolean(item.agentAnalysis);
-    const contextLines = splitInfoLine(item.contextLine);
+    const contextLines = [
+      ...splitInfoLine(item.contextLine),
+      ...(item.matchupMemory?.games > 0 ? [`- Memory matchup: ${item.matchupMemory.note}`] : [])
+    ];
     const splitLines = splitInfoLine(item.matchupSplitLine);
     const bullpenLines = splitInfoLine(item.bullpenLine);
     const pitcherRecentLines = splitInfoLine(item.pitcherRecentLine);
@@ -1962,7 +2052,6 @@ export function formatPredictions(
       item.headToHead?.games > 0
         ? `${item.away.abbreviation || item.away.name} ${item.headToHead.awayWins}-${item.headToHead.homeWins} ${item.home.abbreviation || item.home.name}`
         : 'Belum ada final H2H musim ini';
-
     lines.push(
       [
         `🏟️ ${item.away.name} @ ${item.home.name}`,

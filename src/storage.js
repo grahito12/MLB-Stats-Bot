@@ -7,7 +7,7 @@ const DEFAULT_STATE = {
   subscribers: {},
   predictions: {},
   memory: {
-    version: 1,
+    version: 2,
     totalPicks: 0,
     correctPicks: 0,
     wrongPicks: 0,
@@ -22,6 +22,7 @@ const DEFAULT_STATE = {
       }
     },
     teamBias: {},
+    matchupMemory: {},
     learningLog: []
   }
 };
@@ -31,9 +32,151 @@ const DEFAULT_AUTO_UPDATE = {
   dailyTime: '',
   lastSentDate: ''
 };
+const TEAM_BIAS_LIMIT = 0.08;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function sortTeamIds(left, right) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber;
+  return String(left).localeCompare(String(right));
+}
+
+function matchupMemoryKey(teamAId, teamBId) {
+  return [String(teamAId), String(teamBId)].sort(sortTeamIds).join(':');
+}
+
+function teamSnapshot(team) {
+  return {
+    id: team?.id,
+    name: team?.name,
+    abbreviation: team?.abbreviation
+  };
+}
+
+function currentWinnerStreak(games) {
+  if (!games.length) return null;
+
+  const winnerId = String(games[0].winner.id);
+  let length = 0;
+  for (const game of games) {
+    if (String(game.winner.id) !== winnerId) break;
+    length += 1;
+  }
+
+  return {
+    winner: games[0].winner,
+    length
+  };
+}
+
+function hasAlternatingWinners(games) {
+  if (games.length < 3) return false;
+
+  const recent = games.slice(0, 4).map((game) => String(game.winner.id));
+  for (let index = 1; index < recent.length; index += 1) {
+    if (recent[index] === recent[index - 1]) return false;
+  }
+
+  return true;
+}
+
+function matchupPatternNote(entry) {
+  const recent = entry.recentGames || [];
+  if (!recent.length) return 'Belum ada matchup memory.';
+
+  const streak = entry.currentStreak;
+  const averageMargin = Number(entry.averageMargin || 0).toFixed(1);
+  const accuracy =
+    entry.pickStats?.total > 0
+      ? Math.round((entry.pickStats.correct / entry.pickStats.total) * 100)
+      : 0;
+
+  if (entry.alternating) {
+    return `Matchup recent bergantian; memory dibuat hati-hati. Avg margin ${averageMargin}, akurasi pick ${accuracy}%.`;
+  }
+
+  if (streak?.length >= 2) {
+    return `${streak.winner.abbreviation || streak.winner.name} menang ${streak.length} pertemuan terakhir; tetap diperlakukan sebagai sinyal kecil. Avg margin ${averageMargin}.`;
+  }
+
+  return `${entry.totalGames} pertemuan tersimpan, avg margin ${averageMargin}, akurasi pick matchup ${accuracy}%.`;
+}
+
+function updateMatchupMemory(memory, prediction, result, correct, firstInningCorrect) {
+  const key = matchupMemoryKey(prediction.away.id, prediction.home.id);
+  const existing = memory.matchupMemory[key] || {};
+  const margin = Math.abs(Number(result.home.score) - Number(result.away.score));
+  const gameRecord = {
+    gamePk: prediction.gamePk,
+    dateYmd: prediction.dateYmd || result.dateYmd || '',
+    matchup: prediction.matchup,
+    away: teamSnapshot(result.away),
+    home: teamSnapshot(result.home),
+    winner: teamSnapshot(result.winner),
+    loser: teamSnapshot(result.loser),
+    score: {
+      away: result.away.score,
+      home: result.home.score
+    },
+    margin,
+    pick: teamSnapshot(prediction.pick),
+    pickProbability: prediction.pick.winProbability,
+    pickConfidence: prediction.pick.confidence || 'unknown',
+    correct,
+    firstInningCorrect
+  };
+
+  const existingGames = existing.recentGames || [];
+  const hadExistingGame = existingGames.some(
+    (game) => String(game.gamePk) === String(prediction.gamePk)
+  );
+  const previousGames = existingGames.filter(
+    (game) => String(game.gamePk) !== String(prediction.gamePk)
+  );
+  const recentGames = [gameRecord, ...previousGames].slice(0, 12);
+  const teamIds = [String(prediction.away.id), String(prediction.home.id)];
+  const teamRecords = Object.fromEntries(
+    teamIds.map((teamId) => {
+      const wins = recentGames.filter((game) => String(game.winner.id) === teamId).length;
+      const losses = recentGames.filter((game) => String(game.loser.id) === teamId).length;
+      return [teamId, { wins, losses }];
+    })
+  );
+  const pickStats = {
+    total: recentGames.length,
+    correct: recentGames.filter((game) => game.correct).length
+  };
+  const averageMargin =
+    recentGames.reduce((sum, game) => sum + Number(game.margin || 0), 0) /
+    Math.max(1, recentGames.length);
+
+  const entry = {
+    key,
+    teams: {
+      ...(existing.teams || {}),
+      [String(prediction.away.id)]: teamSnapshot(prediction.away),
+      [String(prediction.home.id)]: teamSnapshot(prediction.home)
+    },
+    totalGames: Math.max(
+      Number(existing.totalGames || 0) + (hadExistingGame ? 0 : 1),
+      recentGames.length
+    ),
+    teamRecords,
+    pickStats,
+    averageMargin,
+    currentStreak: currentWinnerStreak(recentGames),
+    alternating: hasAlternatingWinners(recentGames),
+    recentGames,
+    updatedAt: new Date().toISOString()
+  };
+  entry.note = matchupPatternNote(entry);
+
+  memory.matchupMemory[key] = entry;
+  return entry;
 }
 
 function normalizeSubscriber(subscriber) {
@@ -70,6 +213,7 @@ function normalizeState(state) {
       },
       byConfidence: state?.memory?.byConfidence || {},
       teamBias: state?.memory?.teamBias || {},
+      matchupMemory: state?.memory?.matchupMemory || {},
       learningLog: state?.memory?.learningLog || []
     }
   };
@@ -311,6 +455,22 @@ export class Storage {
         ...memory.firstInning,
         accuracy: firstInningAccuracy
       },
+      matchupMemory: {
+        totalMatchups: Object.keys(memory.matchupMemory || {}).length,
+        recent: Object.values(memory.matchupMemory || {})
+          .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))
+          .slice(0, 5)
+          .map((entry) => ({
+            key: entry.key,
+            teams: entry.teams,
+            totalGames: entry.totalGames,
+            currentStreak: entry.currentStreak,
+            alternating: entry.alternating,
+            averageMargin: entry.averageMargin,
+            pickStats: entry.pickStats,
+            note: entry.note
+          }))
+      },
       recentLog: memory.learningLog.slice(0, 5)
     };
   }
@@ -351,15 +511,29 @@ export class Storage {
       const loserKey = String(result.loser.id);
       const pickKey = String(prediction.pick.id);
 
-      const winnerBump = correct ? 0.004 : 0.025;
-      const loserDrop = correct ? 0.002 : 0.018;
-      memory.teamBias[winnerKey] = clamp((memory.teamBias[winnerKey] || 0) + winnerBump, -0.18, 0.18);
-      memory.teamBias[loserKey] = clamp((memory.teamBias[loserKey] || 0) - loserDrop, -0.18, 0.18);
+      const winnerBump = correct ? 0.002 : 0.006;
+      const loserDrop = correct ? 0.001 : 0.004;
+      memory.teamBias[winnerKey] = clamp(
+        (memory.teamBias[winnerKey] || 0) + winnerBump,
+        -TEAM_BIAS_LIMIT,
+        TEAM_BIAS_LIMIT
+      );
+      memory.teamBias[loserKey] = clamp(
+        (memory.teamBias[loserKey] || 0) - loserDrop,
+        -TEAM_BIAS_LIMIT,
+        TEAM_BIAS_LIMIT
+      );
 
       if (!correct) {
-        memory.teamBias[pickKey] = clamp((memory.teamBias[pickKey] || 0) - 0.015, -0.18, 0.18);
+        memory.teamBias[pickKey] = clamp(
+          (memory.teamBias[pickKey] || 0) - 0.004,
+          -TEAM_BIAS_LIMIT,
+          TEAM_BIAS_LIMIT
+        );
       }
     }
+
+    const matchupMemory = updateMatchupMemory(memory, prediction, result, correct, firstInningCorrect);
 
     memory.learningLog.unshift({
       at: new Date().toISOString(),
@@ -374,9 +548,11 @@ export class Storage {
       firstInningPick: prediction.firstInning?.pick || null,
       firstInningActual:
         result.firstInning?.anyRun === null ? null : result.firstInning.anyRun ? 'YES' : 'NO',
+      matchupMemoryKey: matchupMemory.key,
+      matchupMemoryNote: matchupMemory.note,
       note: correct
-        ? `Pick benar: ${prediction.pick.name}. Bias model diperkuat kecil.`
-        : `Pick salah: ${prediction.pick.name}, pemenang ${result.winner.name}. Memory menurunkan bias pick dan menaikkan bias pemenang.`
+        ? `Pick benar: ${prediction.pick.name}. Matchup memory menyimpan pola pertemuan ini tanpa over-bias.`
+        : `Pick salah: ${prediction.pick.name}, pemenang ${result.winner.name}. Matchup memory mencatat miss dan pola seri untuk pertemuan berikutnya.`
     });
 
     memory.learningLog = memory.learningLog.slice(0, 75);

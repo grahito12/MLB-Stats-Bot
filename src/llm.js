@@ -184,6 +184,19 @@ function compactGameForAgent(item) {
         }
       : null,
     memoryAdjustment: item.memoryAdjustment,
+    matchupMemory: item.matchupMemory
+      ? {
+          games: item.matchupMemory.games,
+          edgeTeam: item.matchupMemory.edgeTeam,
+          edge: item.matchupMemory.edge,
+          note: item.matchupMemory.note,
+          currentStreak: item.matchupMemory.currentStreak,
+          alternating: item.matchupMemory.alternating,
+          averageMargin: item.matchupMemory.averageMargin,
+          pickStats: item.matchupMemory.pickStats,
+          recentGames: item.matchupMemory.recentGames
+        }
+      : null,
     agentAnalysis: item.agentAnalysis
       ? {
           pickTeamName: item.agentAnalysis.pickTeamName,
@@ -451,7 +464,7 @@ async function analyzeWithLocalAgent(config, predictions, memorySummary) {
           confidence: 'optional; system confidence comes from deterministic model and quality rules',
           reasons: ['2-3 alasan singkat bahasa Indonesia'],
           risk: 'risiko terbesar pick ini',
-          memoryNote: 'bagaimana memory mempengaruhi analisa, atau netral',
+          memoryNote: 'bagaimana matchup memory/memory mempengaruhi analisa, atau netral',
           firstInning: {
             required: true,
             pick: 'optional; system will keep deterministic firstInning baseline pick',

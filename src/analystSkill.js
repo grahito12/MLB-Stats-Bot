@@ -1,4 +1,4 @@
-export const ANALYST_SKILL_VERSION = 'mlb-analyst-v1.3';
+export const ANALYST_SKILL_VERSION = 'mlb-analyst-v1.4';
 
 export const ANALYST_REFERENCES = [
   'FanGraphs Sabermetrics Library: wOBA, wRC+, DIPS, BABIP, K%, BB%, ISO, context adjustment.',
@@ -55,7 +55,8 @@ export const ANALYST_SYSTEM_PROMPT = [
   '12. Injury report matters. Treat injured 40-man players as availability risk, especially star hitters, probable starters, late-inning relievers, catchers, and multiple injuries in the same unit. Do not overreact to minor/depth injuries when role impact is unclear.',
   '13. First-inning run analysis is a separate market-style question. Evaluate YRFI/NRFI from team first-inning scoring rate, first-inning allowed rate, recent first-inning samples, H2H first-inning runs, and both starters. Do not infer first-inning risk only from full-game win probability.',
   '14. H2H is a tie-breaker unless there are enough completed games. If H2H games < 3, mention it as weak evidence only.',
-  "15. Memory is a small calibration signal from post-game learning. Use it to detect repeated model blind spots, but never let it dominate today's stats.",
+  "15. Memory is a small calibration signal from post-game learning. Use matchupMemory to detect repeated model blind spots, same-opponent streaks, alternating results, one-run volatility, and margin context, but never let it dominate today's stats.",
+  '15a. Do not treat the last winner as an automatic bias. A team can sweep, split, or regress in game 3; memory should describe the sequence and risk, not force revenge or streak logic.',
   '16. Be skeptical of small samples, hot streaks, and one-line narratives. Name upset risk honestly.',
   '',
   'ML reference layer:',
@@ -103,7 +104,7 @@ export const ANALYST_INTERACTIVE_PROMPT = [
   'For totals questions, separate projected total, market total, over/under probability, weather, park factor, bullpen fatigue, lineup status, and starting pitcher run prevention.',
   'For first-inning questions, use the supplied firstInning baseline, team scored/allowed first-inning rates, recent any-run sample, H2H first-inning sample, and starters.',
   'Answer the user directly in Indonesian.',
-  'Use only the supplied games, agentAnalysis, baseline, H2H, context, advanced stats, modelReference, and memory.',
+  'Use only the supplied games, agentAnalysis, baseline, H2H, matchupMemory, context, advanced stats, modelReference, and memory.',
   'If the question is about a specific team, focus on that matchup.',
   'If the question asks for best edge, strongest pick, upset risk, or comparison, rank the relevant games briefly.',
   'Do not output JSON. Do not use markdown tables.',
@@ -125,7 +126,7 @@ export function buildAnalystSkillSummary() {
     '- Tier 3 hanya context: umpire, public betting, news sentiment, H2H.',
     '- Fokus pada run creation dan run prevention.',
     '- Pisahkan proses dari hasil yang noisy.',
-    '- H2H dan memory dipakai sebagai sinyal kecil, bukan penentu utama.',
+    '- H2H dan matchup memory dipakai sebagai sinyal kecil, bukan penentu utama.',
     '- First inning dianalisa terpisah: team scored/allowed 1st, recent any-run, starter, H2H 1st.',
     '- Confidence dikalibrasi konservatif: 52-70%.',
     '',
@@ -150,7 +151,7 @@ export function buildAnalystSkillSummary() {
     '- Starter form: last 5 starts, pitch count, HR, K/BB.',
     '- Splits: vs LHP/RHP and home/road hand split.',
     '- Context: home/road, L10, RD, xW-L, streak, venue.',
-    '- Learning: post-game memory dari pick sebelumnya.',
+    '- Learning: post-game memory dari pick sebelumnya, termasuk pola matchup yang sama.',
     '',
     'References:',
     ...ANALYST_REFERENCES.map((item) => `- ${item}`)
