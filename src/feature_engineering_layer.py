@@ -11,6 +11,8 @@ from typing import Any
 from .bullpen import bullpen_fatigue_adjustment
 from .features import (
     bullpen_score,
+    get_pitcher_rest_days,
+    get_team_schedule_fatigue,
     home_field_adjustment,
     log5_probability,
     offense_score,
@@ -53,14 +55,36 @@ def _team_strength(team) -> float:
     return clamp(pyth * 0.65 + team.win_pct * 0.35, 0.05, 0.95)
 
 
-def _pitcher_feature(pitcher) -> float:
+def _pitcher_rest_multiplier(rest_days: int) -> float:
+    if rest_days <= 3:
+        return 0.85
+    if rest_days >= 6:
+        return 0.93
+    return 1.0
+
+
+def _team_fatigue_offense_adjustment(fatigue: dict[str, Any]) -> float:
+    return -0.05 if fatigue.get("doubleheader_last_3_days") else 0.0
+
+
+def _team_fatigue_overall_adjustment(fatigue: dict[str, Any]) -> float:
+    return -0.03 if int(fatigue.get("road_streak") or 0) >= 7 else 0.0
+
+
+def _pitcher_feature(pitcher, rest_days: int | None = None) -> float:
     if pitcher is None:
         return 0.0
-    return pitcher_score(pitcher.era, pitcher.whip, pitcher.fip, pitcher.k_bb_ratio)
+    score = pitcher_score(pitcher.era, pitcher.whip, pitcher.fip, pitcher.k_bb_ratio)
+    if rest_days is not None:
+        score *= _pitcher_rest_multiplier(rest_days)
+    return clamp(score, -1.0, 1.0)
 
 
-def _offense_feature(team) -> float:
-    return offense_score(team.ops, team.wrc_plus, team.runs_per_game)
+def _offense_feature(team, fatigue: dict[str, Any] | None = None) -> float:
+    score = offense_score(team.ops, team.wrc_plus, team.runs_per_game)
+    if fatigue:
+        score += _team_fatigue_offense_adjustment(fatigue)
+    return clamp(score, -1.0, 1.0)
 
 
 def _bullpen_feature(team) -> float:
@@ -84,15 +108,34 @@ def build_moneyline_features(collected: dict[str, Any]) -> dict[str, Any]:
     home_pitcher = collected["home_pitcher"]
     away_pitcher = collected["away_pitcher"]
     market = collected["market"]
+    game = collected.get("game")
+    schedule_data = collected.get("state", {}).get("games", [])
+    game_date = getattr(game, "date", collected.get("context", {}).get("date", ""))
 
-    home_strength = _team_strength(home_team)
-    away_strength = _team_strength(away_team)
+    home_pitcher_rest_days = (
+        get_pitcher_rest_days(home_pitcher.pitcher, game_date, schedule_data)
+        if home_pitcher is not None
+        else None
+    )
+    away_pitcher_rest_days = (
+        get_pitcher_rest_days(away_pitcher.pitcher, game_date, schedule_data)
+        if away_pitcher is not None
+        else None
+    )
+    home_fatigue = get_team_schedule_fatigue(home_team.team, game_date, schedule_data)
+    away_fatigue = get_team_schedule_fatigue(away_team.team, game_date, schedule_data)
+
+    home_team_adjustment = _team_fatigue_overall_adjustment(home_fatigue)
+    away_team_adjustment = _team_fatigue_overall_adjustment(away_fatigue)
+    home_strength = clamp(_team_strength(home_team) + home_team_adjustment, 0.05, 0.95)
+    away_strength = clamp(_team_strength(away_team) + away_team_adjustment, 0.05, 0.95)
     log5_home = log5_probability(home_strength, away_strength)
 
     components = {
         "team_strength": (log5_home - 0.5) * 5.0,
-        "starting_pitcher": _pitcher_feature(home_pitcher) - _pitcher_feature(away_pitcher),
-        "offense": _offense_feature(home_team) - _offense_feature(away_team),
+        "starting_pitcher": _pitcher_feature(home_pitcher, home_pitcher_rest_days)
+        - _pitcher_feature(away_pitcher, away_pitcher_rest_days),
+        "offense": _offense_feature(home_team, home_fatigue) - _offense_feature(away_team, away_fatigue),
         "bullpen": _bullpen_feature(home_team) - _bullpen_feature(away_team),
         "recent_form": _recent_feature(home_team) - _recent_feature(away_team),
         "home_field": home_field_adjustment(True),
@@ -103,6 +146,36 @@ def build_moneyline_features(collected: dict[str, Any]) -> dict[str, Any]:
         "away_strength": away_strength,
         "log5_home": log5_home,
         "components": components,
+        "pitcher_rest_adjustment": {
+            "home": {
+                "pitcher": home_pitcher.pitcher if home_pitcher else None,
+                "rest_days": home_pitcher_rest_days,
+                "multiplier": _pitcher_rest_multiplier(home_pitcher_rest_days)
+                if home_pitcher_rest_days is not None
+                else 1.0,
+            },
+            "away": {
+                "pitcher": away_pitcher.pitcher if away_pitcher else None,
+                "rest_days": away_pitcher_rest_days,
+                "multiplier": _pitcher_rest_multiplier(away_pitcher_rest_days)
+                if away_pitcher_rest_days is not None
+                else 1.0,
+            },
+        },
+        "team_fatigue_adjustment": {
+            "home": {
+                **home_fatigue,
+                "team": home_team.team,
+                "offense_adjustment": _team_fatigue_offense_adjustment(home_fatigue),
+                "team_adjustment": home_team_adjustment,
+            },
+            "away": {
+                **away_fatigue,
+                "team": away_team.team,
+                "offense_adjustment": _team_fatigue_offense_adjustment(away_fatigue),
+                "team_adjustment": away_team_adjustment,
+            },
+        },
         "market_implied_probability": {
             "home": _market_probability(market.get("home_moneyline")),
             "away": _market_probability(market.get("away_moneyline")),

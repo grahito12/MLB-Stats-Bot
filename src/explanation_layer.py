@@ -50,6 +50,31 @@ def _risk_factors(
     return risks or ["Normal MLB variance; no model output is guaranteed"]
 
 
+def _fatigue_context(pipeline_result: dict[str, Any]) -> list[str]:
+    moneyline_features = pipeline_result.get("features", {}).get("moneyline", {})
+    rest = moneyline_features.get("pitcher_rest_adjustment", {})
+    team_fatigue = moneyline_features.get("team_fatigue_adjustment", {})
+    notes: list[str] = []
+
+    for side in ("away", "home"):
+        pitcher = rest.get(side, {})
+        rest_days = pitcher.get("rest_days")
+        if rest_days is not None and rest_days < 4 and pitcher.get("pitcher"):
+            notes.append(f"⚠️ {pitcher['pitcher']} on short rest ({rest_days} days)")
+
+    for side in ("away", "home"):
+        fatigue = team_fatigue.get(side, {})
+        if fatigue.get("fatigue_level") == "high":
+            team = fatigue.get("team") or side
+            road_streak = fatigue.get("road_streak", 0)
+            if road_streak >= 7:
+                notes.append(f"⚠️ {team} showing schedule fatigue ({road_streak}-game road trip)")
+            else:
+                notes.append(f"⚠️ {team} showing schedule fatigue")
+
+    return notes
+
+
 def build_prediction_explanation(
     pipeline_result: dict[str, Any],
 ) -> str:
@@ -76,6 +101,7 @@ def build_prediction_explanation(
     )
     if decision == "NO BET":
         final_lean = "NO BET"
+    risk_factors = _risk_factors(market, quality, moneyline, totals) + _fatigue_context(pipeline_result)
 
     lines = [
         "MLB Game Analysis:",
@@ -117,7 +143,7 @@ def build_prediction_explanation(
         *[f"- {factor}" for factor in pipeline_result.get("supporting_factors", [])[:5]],
         "",
         "7. Risk Factors",
-        *[f"- {factor}" for factor in _risk_factors(market, quality, moneyline, totals)],
+        *[f"- {factor}" for factor in risk_factors],
         "",
         f"8. Final Decision: {decision}",
         f"9. Confidence: {confidence}",

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
 from statistics import mean
+from typing import Any
 
 from .utils import clamp, safe_float, safe_int
 
@@ -57,6 +61,245 @@ def normalize_stat(
 def _average_available(values: list[float]) -> float:
     usable = [value for value in values if value is not None]
     return mean(usable) if usable else 0.0
+
+
+def _as_mapping(item: Any) -> dict[str, Any]:
+    if item is None:
+        return {}
+    if isinstance(item, dict):
+        return item
+    if is_dataclass(item):
+        return asdict(item)
+    return {
+        key: getattr(item, key)
+        for key in dir(item)
+        if not key.startswith("_") and not callable(getattr(item, key, None))
+    }
+
+
+def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] not in (None, ""):
+            return mapping[key]
+    return None
+
+
+def _parse_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value in (None, ""):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y%m%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _game_date(game: Any) -> date | None:
+    row = _as_mapping(game)
+    return _parse_date(
+        _first_present(row, "date", "game_date", "gameDate", "officialDate", "start_date")
+    )
+
+
+def _normalize_id(value: Any) -> str:
+    return str(value).strip().lower()
+
+
+def _id_matches(left: Any, right: Any) -> bool:
+    if left in (None, "") or right in (None, ""):
+        return False
+    return _normalize_id(left) == _normalize_id(right)
+
+
+def _nested_team(game: dict[str, Any], side: str) -> dict[str, Any]:
+    team_entry = (game.get("teams") or {}).get(side) or {}
+    team = team_entry.get("team") if isinstance(team_entry, dict) else None
+    return team or team_entry if isinstance(team_entry, dict) else {}
+
+
+def _pitcher_appeared(game: Any, pitcher_id: Any) -> bool:
+    row = _as_mapping(game)
+    direct_fields = (
+        "pitcher_id",
+        "player_id",
+        "person_id",
+        "starter_id",
+        "probable_pitcher_id",
+        "home_pitcher",
+        "away_pitcher",
+        "pitcher",
+    )
+    if any(_id_matches(row.get(field), pitcher_id) for field in direct_fields):
+        return True
+
+    for field in ("pitcher_ids", "pitchers", "player_ids", "appearance_pitcher_ids"):
+        values = row.get(field)
+        if isinstance(values, (list, tuple, set)) and any(_id_matches(value, pitcher_id) for value in values):
+            return True
+
+    teams = row.get("teams") or {}
+    if isinstance(teams, dict):
+        for side in ("away", "home"):
+            side_row = teams.get(side) or {}
+            pitcher = side_row.get("probablePitcher") or side_row.get("probable_pitcher") or {}
+            if isinstance(pitcher, dict) and (
+                _id_matches(pitcher.get("id"), pitcher_id)
+                or _id_matches(pitcher.get("fullName"), pitcher_id)
+                or _id_matches(pitcher.get("name"), pitcher_id)
+            ):
+                return True
+    return False
+
+
+def _team_side(game: Any, team_id: Any) -> str | None:
+    row = _as_mapping(game)
+    home_id = _first_present(row, "home_team_id", "home_id", "home_team")
+    away_id = _first_present(row, "away_team_id", "away_id", "away_team")
+
+    if _id_matches(home_id, team_id):
+        return "home"
+    if _id_matches(away_id, team_id):
+        return "away"
+
+    teams = row.get("teams") or {}
+    if isinstance(teams, dict):
+        for side in ("home", "away"):
+            team = _nested_team(row, side)
+            if (
+                _id_matches(team.get("id"), team_id)
+                or _id_matches(team.get("name"), team_id)
+                or _id_matches(team.get("abbreviation"), team_id)
+            ):
+                return side
+    return None
+
+
+def _pitcher_rest_multiplier(rest_days: int) -> float:
+    if rest_days <= 3:
+        return 0.85
+    if rest_days >= 6:
+        return 0.93
+    return 1.0
+
+
+def get_pitcher_rest_days(
+    pitcher_id: str | int,
+    game_date: str | date | datetime,
+    schedule_data: list[Any] | tuple[Any, ...] | None,
+) -> int:
+    """Return days since a pitcher's last appearance before the target game.
+
+    Missing schedule history returns 5, which represents normal rest and avoids
+    applying an unsupported fatigue or rust penalty.
+    """
+    target_date = _parse_date(game_date)
+    if target_date is None or not schedule_data:
+        return 5
+
+    prior_appearances = [
+        previous_date
+        for game in schedule_data
+        if (previous_date := _game_date(game)) is not None
+        and previous_date < target_date
+        and _pitcher_appeared(game, pitcher_id)
+    ]
+    if not prior_appearances:
+        return 5
+
+    rest_days = max(0, (target_date - max(prior_appearances)).days - 1)
+    return rest_days if rest_days <= 30 else 5
+
+
+def get_team_schedule_fatigue(
+    team_id: str | int,
+    game_date: str | date | datetime,
+    schedule_data: list[Any] | tuple[Any, ...] | None,
+) -> dict[str, Any]:
+    """Summarize team schedule fatigue from games before the target date."""
+    target_date = _parse_date(game_date)
+    if target_date is None or not schedule_data:
+        return {
+            "rest_days": 1,
+            "road_streak": 0,
+            "recent_game_count": 0,
+            "fatigue_level": "low",
+            "doubleheader_last_3_days": False,
+        }
+
+    team_games: list[tuple[date, str]] = []
+    for game in schedule_data:
+        played_date = _game_date(game)
+        if played_date is None or played_date >= target_date:
+            continue
+        side = _team_side(game, team_id)
+        if side:
+            team_games.append((played_date, side))
+
+    if not team_games:
+        return {
+            "rest_days": 1,
+            "road_streak": 0,
+            "recent_game_count": 0,
+            "fatigue_level": "low",
+            "doubleheader_last_3_days": False,
+        }
+
+    team_games.sort(key=lambda item: item[0], reverse=True)
+    last_game_date = team_games[0][0]
+    recent_games = [(played_date, side) for played_date, side in team_games if 0 < (target_date - played_date).days <= 10]
+    rest_days = max(0, (target_date - last_game_date).days - 1)
+    if not recent_games:
+        rest_days = min(rest_days, 10)
+    last_three_dates = [
+        played_date
+        for played_date, _ in team_games
+        if 0 < (target_date - played_date).days <= 3
+    ]
+    doubleheader_last_3_days = any(count >= 2 for count in Counter(last_three_dates).values())
+
+    road_streak = 0
+    for _, side in recent_games:
+        if side != "away":
+            break
+        road_streak += 1
+
+    fatigue_points = 0
+    if len(recent_games) >= 9:
+        fatigue_points += 2
+    elif len(recent_games) >= 7:
+        fatigue_points += 1
+    if doubleheader_last_3_days:
+        fatigue_points += 1
+    if road_streak >= 7:
+        fatigue_points += 2
+    elif road_streak >= 4:
+        fatigue_points += 1
+    if rest_days == 0:
+        fatigue_points += 1
+
+    fatigue_level = "high" if fatigue_points >= 3 else "medium" if fatigue_points >= 1 else "low"
+    return {
+        "rest_days": rest_days,
+        "road_streak": road_streak,
+        "recent_game_count": len(recent_games),
+        "fatigue_level": fatigue_level,
+        "doubleheader_last_3_days": doubleheader_last_3_days,
+    }
 
 
 def pitcher_score(

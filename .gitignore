@@ -9,6 +9,7 @@ data/*.sqlite3
 data/*.sqlite-*
 data/*.sqlite3-*
 data/cache/
+data/tmp_pycache/
 data/tmp_*.csv
 dashboard-react/dist/
 *.log

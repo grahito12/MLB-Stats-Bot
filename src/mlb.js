@@ -370,6 +370,12 @@ function ymdOffset(dateYmd, offsetDays) {
   return date.toISOString().slice(0, 10);
 }
 
+function ymdDiff(laterYmd, earlierYmd) {
+  const later = new Date(`${laterYmd}T00:00:00Z`);
+  const earlier = new Date(`${earlierYmd}T00:00:00Z`);
+  return Math.round((later.getTime() - earlier.getTime()) / 86_400_000);
+}
+
 function splitRecordText(record) {
   return record ? `${record.wins}-${record.losses} (${safeFixed(toNumber(record.pct, 0) * 100, 0)}%)` : '-';
 }
@@ -495,6 +501,132 @@ async function fetchRecentTeamGames(teamIds, dateYmd, daysBack = 3) {
     .flatMap((date) => date.games || [])
     .filter((game) => game.status?.abstractGameState === 'Final')
     .filter((game) => idSet.has(game.teams.away.team.id) || idSet.has(game.teams.home.team.id));
+}
+
+async function fetchScheduleFatigueProfiles(teamIds, dateYmd) {
+  const profiles = new Map(teamIds.map((teamId) => [teamId, finalizeScheduleFatigueProfile(teamId, [], dateYmd)]));
+  const games = await fetchRecentTeamGames(teamIds, dateYmd, 10);
+
+  for (const teamId of teamIds) {
+    const teamGames = games
+      .filter((game) => game.teams.away.team.id === teamId || game.teams.home.team.id === teamId)
+      .map((game) => ({
+        date: game.officialDate || String(game.gameDate || '').slice(0, 10),
+        side: game.teams.away.team.id === teamId ? 'away' : 'home'
+      }))
+      .filter((game) => game.date);
+    profiles.set(teamId, finalizeScheduleFatigueProfile(teamId, teamGames, dateYmd));
+  }
+
+  return profiles;
+}
+
+function finalizeScheduleFatigueProfile(teamId, games, dateYmd) {
+  const sorted = [...games].sort((left, right) => String(right.date).localeCompare(String(left.date)));
+  const lastGame = sorted[0] || null;
+  const restDays = lastGame ? Math.max(0, ymdDiff(dateYmd, lastGame.date) - 1) : 10;
+  const dateCounts = new Map();
+  for (const game of sorted.filter((item) => ymdDiff(dateYmd, item.date) <= 3)) {
+    dateCounts.set(game.date, (dateCounts.get(game.date) || 0) + 1);
+  }
+  const doubleheaderLast3Days = [...dateCounts.values()].some((count) => count >= 2);
+
+  let roadStreak = 0;
+  for (const game of sorted) {
+    if (game.side !== 'away') break;
+    roadStreak += 1;
+  }
+
+  let fatiguePoints = 0;
+  if (sorted.length >= 9) fatiguePoints += 2;
+  else if (sorted.length >= 7) fatiguePoints += 1;
+  if (doubleheaderLast3Days) fatiguePoints += 1;
+  if (roadStreak >= 7) fatiguePoints += 2;
+  else if (roadStreak >= 4) fatiguePoints += 1;
+  if (restDays === 0) fatiguePoints += 1;
+  const fatigueLevel = fatiguePoints >= 3 ? 'high' : fatiguePoints >= 1 ? 'medium' : 'low';
+
+  return {
+    teamId,
+    restDays,
+    roadStreak,
+    recentGameCount: sorted.length,
+    doubleheaderLast3Days,
+    fatigueLevel,
+    offenseAdjustment: doubleheaderLast3Days ? -0.05 : 0,
+    teamAdjustment: roadStreak >= 7 ? -0.03 : 0,
+    line: `${sorted.length}G last 10d, rest ${restDays}d, road streak ${roadStreak}, fatigue ${fatigueLevel}${doubleheaderLast3Days ? ', doubleheader flag' : ''}`
+  };
+}
+
+function pitcherRestProfile(pitcher, recentStarts, dateYmd) {
+  if (!pitcher) {
+    return {
+      pitcher: 'TBD',
+      restDays: null,
+      multiplier: 1,
+      flag: 'SP rest unavailable'
+    };
+  }
+
+  const lastStartDate = recentStarts?.lastStartDate || '';
+  const rawRestDays = lastStartDate ? Math.max(0, ymdDiff(dateYmd, lastStartDate) - 1) : null;
+  const restDays = rawRestDays !== null && rawRestDays <= 30 ? rawRestDays : null;
+  const multiplier = restDays === null ? 1 : restDays <= 3 ? 0.85 : restDays >= 6 ? 0.93 : 1;
+  const label =
+    restDays === null
+      ? 'SP rest unavailable'
+      : restDays <= 3
+        ? `${pitcher.fullName} short rest ${restDays}d`
+        : restDays >= 6
+          ? `${pitcher.fullName} long rest ${restDays}d`
+          : `${pitcher.fullName} normal rest ${restDays}d`;
+
+  return {
+    pitcher: pitcher.fullName,
+    restDays,
+    multiplier,
+    flag: label
+  };
+}
+
+function scheduleFatigueEdge(homeFatigue, awayFatigue, homeRest, awayRest) {
+  const homePenalty =
+    Math.abs(toNumber(homeFatigue.offenseAdjustment, 0)) +
+    Math.abs(toNumber(homeFatigue.teamAdjustment, 0)) +
+    (toNumber(homeRest.multiplier, 1) < 1 ? (1 - toNumber(homeRest.multiplier, 1)) * 0.25 : 0);
+  const awayPenalty =
+    Math.abs(toNumber(awayFatigue.offenseAdjustment, 0)) +
+    Math.abs(toNumber(awayFatigue.teamAdjustment, 0)) +
+    (toNumber(awayRest.multiplier, 1) < 1 ? (1 - toNumber(awayRest.multiplier, 1)) * 0.25 : 0);
+  return clamp(awayPenalty - homePenalty, -0.08, 0.08);
+}
+
+function fatigueFlagLines(away, home, awaySchedule, homeSchedule, awayRest, homeRest) {
+  const lines = [
+    `${away.abbreviation || away.name} schedule ${awaySchedule.line}`,
+    `${home.abbreviation || home.name} schedule ${homeSchedule.line}`
+  ];
+
+  for (const [team, schedule] of [
+    [away, awaySchedule],
+    [home, homeSchedule]
+  ]) {
+    if (schedule.doubleheaderLast3Days) {
+      lines.push(`${team.abbreviation || team.name} doubleheader in last 3 days: offense fatigue flag`);
+    }
+    if (schedule.roadStreak >= 7) {
+      lines.push(`${team.abbreviation || team.name} ${schedule.roadStreak}-game road streak: team fatigue flag`);
+    }
+  }
+
+  for (const rest of [awayRest, homeRest]) {
+    if (rest.restDays !== null && (rest.restDays < 4 || rest.restDays >= 6)) {
+      lines.push(rest.flag);
+    }
+  }
+
+  return lines;
 }
 
 async function fetchBoxscore(gamePk) {
@@ -1629,6 +1761,7 @@ function predictGame(
   pitcherDetails,
   pitcherRecentStarts,
   bullpenProfiles,
+  scheduleFatigueProfiles,
   headToHead,
   firstInningProfiles,
   injuryProfiles,
@@ -1653,6 +1786,11 @@ function predictGame(
   const homePitcherRecent = homeStarter ? pitcherRecentStarts.get(homeStarter.id) : null;
   const awayBullpen = bullpenProfiles.get(awayTeam.id) || finalizeBullpenProfile({ teamId: awayTeam.id, games: 0, bullpenPitches: 0, bullpenOuts: 0, relieverAppearances: 0, relieverDates: new Map(), highPitchRelievers: 0 });
   const homeBullpen = bullpenProfiles.get(homeTeam.id) || finalizeBullpenProfile({ teamId: homeTeam.id, games: 0, bullpenPitches: 0, bullpenOuts: 0, relieverAppearances: 0, relieverDates: new Map(), highPitchRelievers: 0 });
+  const awayScheduleFatigue = scheduleFatigueProfiles.get(awayTeam.id) || finalizeScheduleFatigueProfile(awayTeam.id, [], game.officialDate || String(game.gameDate).slice(0, 10));
+  const homeScheduleFatigue = scheduleFatigueProfiles.get(homeTeam.id) || finalizeScheduleFatigueProfile(homeTeam.id, [], game.officialDate || String(game.gameDate).slice(0, 10));
+  const gameDateYmd = game.officialDate || String(game.gameDate || '').slice(0, 10);
+  const awayPitcherRest = pitcherRestProfile(awayStarter, awayPitcherRecent, gameDateYmd);
+  const homePitcherRest = pitcherRestProfile(homeStarter, homePitcherRecent, gameDateYmd);
   const awayInjuries = injuryProfiles.get(awayTeam.id) || [];
   const homeInjuries = injuryProfiles.get(homeTeam.id) || [];
   const gameLineups = lineupProfiles || {};
@@ -1721,9 +1859,15 @@ function predictGame(
   const log5Edge = homeReferenceBlend - 0.5;
   const h2hEdge = headToHead?.games > 0 ? (headToHead.homeProbability - 50) / 50 : 0;
   const memoryEdge = (homeMemoryBias - awayMemoryBias) * 0.35 + matchupMemory.edge;
+  const fatigueEdge = scheduleFatigueEdge(
+    homeScheduleFatigue,
+    awayScheduleFatigue,
+    homePitcherRest,
+    awayPitcherRest
+  );
   const edge =
     winPctEdge * 0.65 +
-    offenseEdge * 0.22 +
+    (offenseEdge + homeScheduleFatigue.offenseAdjustment - awayScheduleFatigue.offenseAdjustment) * 0.22 +
     preventionEdge * 0.2 +
     spEdge * 0.26 +
     formEdge +
@@ -1731,6 +1875,7 @@ function predictGame(
     log5Edge * 0.85 +
     h2hEdge * 0.12 +
     memoryEdge +
+    fatigueEdge +
     0.18;
   const homeProbability = clamp(sigmoid(edge) * 100, 30, 70);
   const awayProbability = 100 - homeProbability;
@@ -1816,6 +1961,7 @@ function predictGame(
     matchupSplitLine: `${matchupSplitLine(away, awayStanding, homeStarter, 'away')} | ${matchupSplitLine(home, homeStanding, awayStarter, 'home')}`,
     pitcherRecentLine: `${away.abbreviation || away.name} SP ${awayPitcherRecent?.line || 'recent starts unavailable'} | ${home.abbreviation || home.name} SP ${homePitcherRecent?.line || 'recent starts unavailable'}`,
     bullpenLine: `${away.abbreviation || away.name} bullpen ${awayBullpen.line} | ${home.abbreviation || home.name} bullpen ${homeBullpen.line}`,
+    fatigueLines: fatigueFlagLines(away, home, awayScheduleFatigue, homeScheduleFatigue, awayPitcherRest, homePitcherRest),
     injuryLine: `${injuryCountLabel(away, awayInjuries)} | ${injuryCountLabel(home, homeInjuries)}`,
     injuryDetailLines: [
       ...injuryDetailLines(away, awayInjuries),
@@ -1849,6 +1995,15 @@ function predictGame(
       away: awayBullpen,
       home: homeBullpen
     },
+    scheduleFatigue: {
+      away: awayScheduleFatigue,
+      home: homeScheduleFatigue,
+      pitcherRest: {
+        away: awayPitcherRest,
+        home: homePitcherRest
+      },
+      edge: fatigueEdge
+    },
     memoryAdjustment: {
       away: awayMemoryBias,
       home: homeMemoryBias,
@@ -1872,11 +2027,12 @@ export async function getMlbPredictions(dateYmd = dateInTimezone('Asia/Jakarta')
     ...new Set(games.flatMap((game) => [game.teams.away.team.id, game.teams.home.team.id]))
   ];
 
-  const [teamStats, standings, firstInningProfiles, bullpenProfiles, injuryProfiles] = await Promise.all([
+  const [teamStats, standings, firstInningProfiles, bullpenProfiles, scheduleFatigueProfiles, injuryProfiles] = await Promise.all([
     fetchTeamStats(season),
     fetchStandings(season, dateYmd),
     fetchFirstInningProfiles(season, dateYmd),
     fetchBullpenProfiles(teamIds, dateYmd),
+    fetchScheduleFatigueProfiles(teamIds, dateYmd),
     fetchInjuryProfiles(teamIds, dateYmd, season)
   ]);
   const probablePitcherIds = [
@@ -1957,6 +2113,7 @@ export async function getMlbPredictions(dateYmd = dateInTimezone('Asia/Jakarta')
       pitcherDetails,
       pitcherRecentStarts,
       bullpenProfiles,
+      scheduleFatigueProfiles,
       headToHeadStats.get(game.gamePk),
       firstInningProfiles,
       injuryProfiles,
@@ -2037,6 +2194,9 @@ export function formatPredictions(
     ];
     const splitLines = splitInfoLine(item.matchupSplitLine);
     const bullpenLines = splitInfoLine(item.bullpenLine);
+    const fatigueLines = item.fatigueLines?.length
+      ? item.fatigueLines.map((line) => `• ${line}`)
+      : [];
     const pitcherRecentLines = splitInfoLine(item.pitcherRecentLine);
     const advancedLines = splitInfoLine(item.advancedLine);
     const modelReferenceLines = item.modelReferenceLines?.length
@@ -2080,6 +2240,7 @@ export function formatPredictions(
         '',
         '🧤 Bullpen',
         ...bullpenLines,
+        ...fatigueLines,
         '',
         '🏥 Injury Report',
         ...injuryLines,

@@ -6,6 +6,7 @@ from typing import Any
 
 from .model import BaselinePredictionModel
 from .totals import predict_total_runs as predict_total_runs_model
+from .utils import clamp, confidence_label, logistic
 
 
 def predict_moneyline_from_features(
@@ -19,18 +20,36 @@ def predict_moneyline_from_features(
         collected["home_pitcher"],
         collected["away_pitcher"],
     )
+    model = BaselinePredictionModel()
+    components = features["moneyline"]["components"]
+    rating_difference = sum(
+        model.weights.get(name, 0.0) * value for name, value in components.items()
+    )
+    home_probability = clamp(logistic(rating_difference), 0.05, 0.95)
+    away_probability = 1.0 - home_probability
+    predicted_winner = (
+        collected["home_team"].team
+        if home_probability >= 0.5
+        else collected["away_team"].team
+    )
+
     return {
         "matchup": collected["context"]["matchup"],
-        "home_win_probability": result.home_win_probability,
-        "away_win_probability": result.away_win_probability,
-        "predicted_winner": result.predicted_winner,
-        "final_lean": result.predicted_winner,
-        "confidence": result.confidence,
-        "components": features["moneyline"]["components"]
-        | {"defense": 0.0, "injuries_lineup": 0.0, "market_odds": 0.0},
+        "home_win_probability": home_probability,
+        "away_win_probability": away_probability,
+        "predicted_winner": predicted_winner,
+        "final_lean": predicted_winner,
+        "confidence": confidence_label(home_probability),
+        "components": components | {"defense": 0.0, "injuries_lineup": 0.0, "market_odds": 0.0},
         "market": collected["market"],
-        "main_factors": result.main_factors,
+        "main_factors": model._main_factors(components, home_probability >= 0.5),
         "market_type": "moneyline",
+        "rating_difference": rating_difference,
+        "baseline_without_fatigue": {
+            "home_win_probability": result.home_win_probability,
+            "away_win_probability": result.away_win_probability,
+            "predicted_winner": result.predicted_winner,
+        },
         "source": "deterministic_python_model",
     }
 
