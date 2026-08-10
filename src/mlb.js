@@ -26,7 +26,10 @@ const _mlbConfig = loadConfig();
 const MLB_TIMEZONE = _mlbConfig.timezone;
 const GAME_SEPARATOR = UI_LINE;
 const SECTION_SEPARATOR = UI_THIN_LINE;
-const DEFAULT_MONEYLINE_VALUE_EDGE_THRESHOLD = 4.0;
+// Defaults mirror config.minimumMoneylineEdge (percent scale). Live path reads config.
+const DEFAULT_MONEYLINE_VALUE_EDGE_THRESHOLD = 5.0;
+// Soft secondary gates (thin matchup / incomplete lineup) still use 4.0 unless
+// rules JSON params override — edge floor itself is the configurable hard gate.
 const STRONG_VALUE_EDGE_THRESHOLD = 4.0;
 // Calibrated win-probability floor for a graded VALUE bet. Deep analysis of
 // 1105 moneyline outcomes (2026 run) showed the model is OVERCONFIDENT at high probs:
@@ -594,7 +597,7 @@ function moneylineValueOption(item, side) {
 }
 
 function moneylineValueEdgeThreshold() {
-  const configured = toNumber(loadConfig().minimumMoneylineEdge, 0.04);
+  const configured = toNumber(loadConfig().minimumMoneylineEdge, 0.05);
   return configured <= 1 ? configured * 100 : configured;
 }
 

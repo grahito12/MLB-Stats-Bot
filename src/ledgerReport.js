@@ -1,4 +1,5 @@
 import { uiBullet, uiKV, uiSection, uiTitle, UI_LINE } from './telegramFormat.js';
+import { summarizeClv, clvGateReason, DEFAULT_CLV_GATE } from './clv_gate.js';
 
 function num(value, fallback = 0) {
   const parsed = Number(value);
@@ -15,10 +16,16 @@ function fmtOdds(value) {
   return `${n > 0 ? '+' : ''}${Math.round(n)}`;
 }
 
+function fmtClv(value) {
+  if (value == null || !Number.isFinite(Number(value))) return 'n/a';
+  const n = Number(value);
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
+}
+
 // Render the bet ledger for /ledger. Fixed-notional bankroll (default 100u):
 // units_staked is already a % of bankroll, so it doubles as units. ROI is
-// stake-weighted: total P/L over total staked.
-export function formatLedgerReport(rows, { bankrollUnits = 100 } = {}) {
+// stake-weighted: total P/L over total staked. Also reports rolling avg CLV.
+export function formatLedgerReport(rows, { bankrollUnits = 100, clvGate = null } = {}) {
   const all = Array.isArray(rows) ? rows : [];
   if (all.length === 0) {
     return [
@@ -30,6 +37,9 @@ export function formatLedgerReport(rows, { bankrollUnits = 100 } = {}) {
 
   const open = all.filter((r) => r.status === 'open');
   const settled = all.filter((r) => r.status === 'settled');
+  const gateConfig = { ...DEFAULT_CLV_GATE, ...(clvGate || {}) };
+  const clvSummary = summarizeClv(all, { market: 'moneyline', lookback: gateConfig.lookback });
+  const gateBlocked = Boolean(clvGateReason(clvSummary, gateConfig));
 
   const lines = [uiTitle('📒', 'Bet Ledger'), uiKV('🏦', 'Bankroll', `${bankrollUnits}u notional (¼-Kelly)`), ''];
 
@@ -62,6 +72,32 @@ export function formatLedgerReport(rows, { bankrollUnits = 100 } = {}) {
     lines.push(uiKV('💰', 'Units staked', `${staked.toFixed(2)}u`));
     lines.push(uiKV('📈', 'Units P/L', fmtUnits(pl)));
     lines.push(uiKV('🎯', 'ROI', `${roi > 0 ? '+' : ''}${roi.toFixed(1)}%`));
+  }
+  lines.push('');
+
+  // Rolling CLV (selection quality; used by VALUE gate)
+  lines.push(uiSection('📉', 'CLV (moneyline)'));
+  if (!clvSummary.sample) {
+    lines.push(uiBullet('—', 'Belum ada settled CLV.'));
+  } else {
+    lines.push(
+      uiKV(
+        '📌',
+        'Avg CLV',
+        `${fmtClv(clvSummary.avgClv)} (n=${clvSummary.sample}, +${clvSummary.positive}/-${clvSummary.negative})`
+      )
+    );
+    lines.push(
+      uiKV(
+        '🚪',
+        'VALUE gate',
+        gateBlocked
+          ? `BLOCK (avg ${fmtClv(clvSummary.avgClv)} < ${fmtClv(gateConfig.minAvgClv)}, n≥${gateConfig.minSample})`
+          : clvSummary.sample < gateConfig.minSample
+            ? `open (sample ${clvSummary.sample}<${gateConfig.minSample})`
+            : 'open'
+      )
+    );
   }
   lines.push('');
 

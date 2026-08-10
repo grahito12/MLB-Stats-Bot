@@ -20,6 +20,8 @@ import {
   moneylineDecisionLines
 } from './mlb.js';
 import { Storage } from './storage.js';
+import { resolveClvSide as resolveClvSideCore } from './clv_side.js';
+import { applyClvGateToPrediction, summarizeClv } from './clv_gate.js';
 import { attachNewsContext, persistNewsFeatureSnapshots } from './news.js';
 import { setupWebhook, TelegramBot } from './telegram.js';
 import { UI_LINE, UI_THIN_LINE, uiBullet, uiCommand, uiKV, uiSection, uiTitle } from './telegramFormat.js';
@@ -180,6 +182,26 @@ function applyNewsRiskVeto(predictions) {
   return predictions;
 }
 
+/** Selection-only CLV gate after value engine. Never mutates model probs/edge math. */
+function applyRollingClvGate(predictions) {
+  const gateConfig = config.clvGate || {};
+  if (gateConfig.enabled === false) return predictions;
+  let rows = [];
+  try {
+    rows = storage.readLedger({ includeArchived: true }) || [];
+  } catch {
+    rows = [];
+  }
+  const summary = summarizeClv(rows, {
+    market: 'moneyline',
+    lookback: gateConfig.lookback
+  });
+  for (const prediction of predictions || []) {
+    applyClvGateToPrediction(prediction, summary, gateConfig);
+  }
+  return predictions;
+}
+
 async function buildAlertPayload(dateYmd, options = {}) {
   const modelMemory = config.modelMemory ? storage.getMemory() : {};
   const predictions = await getMlbPredictions(dateYmd, modelMemory);
@@ -189,6 +211,7 @@ async function buildAlertPayload(dateYmd, options = {}) {
   await attachMarketContext(predictions);
   await attachNewsContext(config, predictions, storage);
   applyNewsRiskVeto(predictions);
+  applyRollingClvGate(predictions);
   await attachAgentAnalyses(predictions);
   persistNewsFeatures(dateYmd, predictions);
   storage.savePredictions(dateYmd, predictions);
@@ -224,6 +247,7 @@ async function sendBothLineupsPregameAlert(bot, chatId, game, awayLineup, homeLi
   await attachMarketContext(predictions);
   await attachNewsContext(config, predictions, storage);
   applyNewsRiskVeto(predictions);
+  applyRollingClvGate(predictions);
   await attachAgentAnalyses(predictions);
   persistNewsFeatures(dateYmd, predictions);
   storage.savePredictions(dateYmd, predictions);
@@ -403,6 +427,7 @@ async function attachMarketContext(predictions) {
     applyMoneylineValueMarket(prediction);
   }
 
+  applyRollingClvGate(predictions);
   return predictions;
 }
 
@@ -987,6 +1012,7 @@ async function handlePredictCallback(bot, callbackQuery) {
   await attachMarketContext([prediction]);
   await attachNewsContext(config, [prediction], storage);
   applyNewsRiskVeto([prediction]);
+  applyRollingClvGate([prediction]);
   await attachAgentAnalyses([prediction]);
   persistNewsFeatures(dateYmd, [prediction]);
   storage.savePredictions(dateYmd, [prediction]);
@@ -1378,6 +1404,7 @@ async function handlePicksCommand(bot, chatId, question, dateYmd = dateInTimezon
   await attachMarketContext(predictions);
   await attachNewsContext(config, predictions, storage);
   applyNewsRiskVeto(predictions);
+  applyRollingClvGate(predictions);
   persistNewsFeatures(dateYmd, predictions);
   storage.savePredictions(dateYmd, predictions);
   setCachedPredictions(chatId, dateYmd, predictions);
@@ -1456,6 +1483,7 @@ async function askAgent(bot, chatId, question, dateYmd = dateInTimezone(config.t
   if (!knowledgeOnly) {
     await attachNewsContext(config, predictions, storage);
     applyNewsRiskVeto(predictions);
+    applyRollingClvGate(predictions);
     persistNewsFeatures(dateYmd, predictions);
     storage.savePredictions(dateYmd, predictions);
     setCachedPredictions(chatId, dateYmd, predictions);
@@ -1527,25 +1555,14 @@ function maybeQueueCalibrationRetrain(alreadyQueued = false) {
 
 /**
  * CLV side must match the immutable value bet side (ledger), not display pick.
- * Falls back to prediction.valuePick.side, then prediction.pick only if no value side.
+ * VALUE bets refuse display-pick fallback so CLV and P/L share one side.
  */
 function resolveClvSide(prediction, storageRef = storage) {
-  const gamePk = String(prediction?.gamePk || '');
-  if (gamePk && typeof storageRef.getLedgerSide === 'function') {
-    const fromLedger = storageRef.getLedgerSide(gamePk, 'moneyline');
-    if (fromLedger === 'home' || fromLedger === 'away') return fromLedger;
-  }
-
-  const valueSide = prediction?.valuePick?.side;
-  if (valueSide === 'home' || valueSide === 'away') return valueSide;
-
-  if (prediction?.valuePick?.teamId != null) {
-    if (String(prediction.valuePick.teamId) === String(prediction.home?.id)) return 'home';
-    if (String(prediction.valuePick.teamId) === String(prediction.away?.id)) return 'away';
-  }
-
-  // Last resort: display pick (legacy). Prefer not to use for VALUE bets.
-  return String(prediction?.pick?.id) === String(prediction?.home?.id) ? 'home' : 'away';
+  const hasValueBet =
+    prediction?.betDecision?.status === 'VALUE' ||
+    Boolean(prediction?.valuePick?.side) ||
+    prediction?.valuePick?.teamId != null;
+  return resolveClvSideCore(prediction, storageRef, { requireValueSide: hasValueBet });
 }
 
 function computeMoneylineClv(prediction, gamePk, side) {
@@ -1840,7 +1857,7 @@ async function handleMessage(bot, message) {
     if (!acquireCommandLock(chatId, 'ledger')) return;
     try {
       const rows = storage.readLedger({ includeArchived: true });
-      await bot.sendMessage(chatId, formatLedgerReport(rows));
+      await bot.sendMessage(chatId, formatLedgerReport(rows, { clvGate: config.clvGate }));
     } finally {
       releaseCommandLock(chatId, 'ledger');
     }

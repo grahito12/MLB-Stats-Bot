@@ -10,7 +10,7 @@ data wall, and evaluator market baselines.
 | Live JS path ≠ Python backtest | **Mitigated for moneyline** — live and replay now share `src/core/prediction_core.js`; Python backtest remains fixture-only |
 | Full-season team/pitcher stats without date reconstruction | **Mitigated in live path** (byDateRange as_of); still unsafe if called without asOf |
 | Boxscore lineup as historical feature | **Mitigated** — validator marks it `historical_unverified`, never promotion-eligible |
-| Mutable `picks` UPSERT still primary identity | Partial — decisions table added but live still UPSERTs picks |
+| Mutable `picks` UPSERT still primary identity | **Mitigated (Phase 1)** — append-only `prediction_run_id` + `pick_processing`; latest-by-version reads |
 | Historical rows lack prediction_timestamp / quote provenance | Cannot fully backfill; new live snapshots now freeze `coreInputs` + calibration artifact for recompute replay |
 | **Model trails no-vig market** | **New finding (unaudited):** Brier improvement −0.021, accuracy 44.7% vs market 53.2% — no edge claim |
 
@@ -32,6 +32,8 @@ data wall, and evaluator market baselines.
 | Model-vs-market disagreement gate (model-home vs market-away) | **Not promoted** — train WR 44%, test WR 52%, n=54. No bypass or boost applied. |
 | Team advantage tiers | **Live** (`data/team_advantages.json`) — S/A/B/C/D tiers per team from WR/ROI/disagreement. Use as secondary filter: avoid D-tier teams entirely, prefer B+ tier for value bets. |
 | Multi-factor confidence (SP/form/H2H/injury/lineup) | **Live** (`js.factor_confidence` + sizing) — blocks weak-factor VALUE; stake 0.75–1.25x. Free StatsAPI signals only. |
+| Moneyline edge floor | **Phase 2 live (2026-08-10)** — default `MINIMUM_MONEYLINE_EDGE=0.05` (was 0.04). Selection only; no model-prob change. Historical ledger (graded under 4%) unchanged — new floor applies to NEW VALUE bets only. |
+| Rolling avg CLV gate | **Phase 2 live (2026-08-10)** — blocks new VALUE when rolling avg CLV < 0 with n≥20 settled moneyline (`src/clv_gate.js`, env `CLV_GATE_*`); `/ledger` reports avg CLV + gate status. Applied after news veto on every prediction path. |
 
 ## P2
 

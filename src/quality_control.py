@@ -27,7 +27,7 @@ STABLE = "Stable"
 MOVED_HEAVILY = "Moved heavily"
 
 _CONFIDENCE_LEVELS = ("Low", "Medium", "High")
-_DEFAULT_MONEYLINE_EDGE_THRESHOLD = 0.04
+_DEFAULT_MONEYLINE_EDGE_THRESHOLD = 0.05
 
 
 def _moneyline_edge_threshold() -> float:

@@ -79,12 +79,12 @@ CORPUS: dict[str, Callable[[], tuple[dict[str, Any], dict[str, Any]]]] = {
         _prediction(confidence="Medium", model_edge=0.06),
         _report(),
     ),
-    "bet_grade_floor_exactly_004": lambda: (
-        _prediction(confidence="High", model_edge=0.04),
+    "bet_grade_floor_exactly_005": lambda: (
+        _prediction(confidence="High", model_edge=0.05),
         _report(),
     ),
     "lean_high_edge_just_below_bet_floor": lambda: (
-        _prediction(confidence="High", model_edge=0.039),
+        _prediction(confidence="High", model_edge=0.049),
         _report(),
     ),
     # --- probable pitcher missing (NO_BET, order 10) ------------------------
@@ -107,7 +107,7 @@ CORPUS: dict[str, Callable[[], tuple[dict[str, Any], dict[str, Any]]]] = {
         _report(),
     ),
     "edge_at_threshold_ok": lambda: (
-        _prediction(model_edge=0.04),
+        _prediction(model_edge=0.05),
         _report(),
     ),
     # --- data quality floor (NO_BET, order 30) ------------------------------

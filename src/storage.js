@@ -1647,7 +1647,7 @@ export class Storage {
       .prepare(
         `SELECT DISTINCT p.date_ymd
          FROM picks p
-         JOIN pick_processing pp ON pp.prediction_run_id = p.prediction_run_id
+         JOIN pick_processing pp ON pp.game_pk = p.game_pk
          WHERE pp.post_game_processed = 0 AND p.date_ymd <> ''
          ORDER BY p.date_ymd`
       )
@@ -1877,6 +1877,12 @@ export class Storage {
     const betPolicyVersion =
       prediction.betPolicyVersion || prediction.versions?.betPolicy || null;
     const runId = prediction.runId || prediction.predictionRunId || null;
+    // Bind ledger row to immutable pick identity when available.
+    const latestPick = this.latestPickRow(gamePk);
+    const predictionRunId =
+      prediction.predictionRunId ||
+      latestPick?.prediction_run_id ||
+      null;
     const decisionHash = hashDecisionPayload({
       gamePk,
       market,
@@ -1895,17 +1901,18 @@ export class Storage {
       const info = this.db
         .prepare(
           `INSERT INTO bet_ledger (
-            decision_id, game_pk, date_ymd, market, team, side, odds,
+            decision_id, game_pk, prediction_run_id, date_ymd, market, team, side, odds,
             fair_prob, model_prob, edge, units_staked, status, recommended_at,
             feature_fallback_count, fallback_features_used,
             selected_team_id, model_pick_team_id, bookmaker, quote_id,
             decision_hash, model_version, calibration_version, bet_policy_version, run_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(game_pk, market) DO NOTHING`
         )
         .run(
           decisionId,
           gamePk,
+          predictionRunId,
           dateYmd,
           market,
           value.teamName || null,

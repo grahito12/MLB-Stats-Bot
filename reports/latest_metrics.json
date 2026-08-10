@@ -1,9 +1,9 @@
 {
   "metadata": {
-    "git_sha": "cc14e16cda9ea49d464b68b3f1bb4af79998d67d",
+    "git_sha": "91771597bcf17046b368f9d58bd3c48e801e980c",
     "dataset_hash": "f520413d58379157f235c7b5b00cccea0cf8d1bd42272ce7d3d20ffc054fd501",
     "row_count": 83,
-    "generated_at": "2026-08-04T08:14:49.548797+00:00",
+    "generated_at": "2026-08-10T13:41:22.563111+00:00",
     "evaluator": "src/evaluate.py"
   },
   "metrics": {

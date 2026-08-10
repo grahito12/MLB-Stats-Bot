@@ -30,7 +30,7 @@ from .prediction_pipeline import run_prediction_pipeline
 from .utils import data_path, safe_float
 
 DEFAULT_DASHBOARD_SETTINGS: dict[str, Any] = {
-    "minimum_moneyline_edge": 0.04,
+    "minimum_moneyline_edge": 0.05,
     "minimum_data_quality_score": 60,
     "odds_stale_minutes": 15,
     "weather_stale_minutes": 60,

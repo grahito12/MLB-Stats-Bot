@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from './config.js';
 import { applyMoneylineValueMarket, confidenceBand, getMlbPredictions } from './mlb.js';
+import { applyClvGateToPrediction, summarizeClv } from './clv_gate.js';
 import { attachCurrentOdds } from './lineMovement.js';
 import { attachNewsContext, persistNewsFeatureSnapshots } from './news.js';
 import { Storage } from './storage.js';
@@ -456,6 +457,22 @@ export async function livePredictions(dateYmd) {
     } catch (error) {
       console.warn(`Value engine failed for game ${prediction.gamePk}:`, error.message);
     }
+  }
+  // Selection-only CLV gate — same policy as bot path; never mutates model probs.
+  try {
+    const gateConfig = config.clvGate || {};
+    if (gateConfig.enabled !== false) {
+      const rows = storage.readLedger({ includeArchived: true }) || [];
+      const summary = summarizeClv(rows, {
+        market: 'moneyline',
+        lookback: gateConfig.lookback
+      });
+      for (const prediction of predictions) {
+        applyClvGateToPrediction(prediction, summary, gateConfig);
+      }
+    }
+  } catch (error) {
+    console.warn('Dashboard CLV gate unavailable:', error.message);
   }
   try {
     await attachNewsContext(config, predictions, storage);

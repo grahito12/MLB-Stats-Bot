@@ -313,7 +313,7 @@ test('stale moneyline odds downgrade otherwise valid value bet', () => {
   }
 });
 
-test('moneyline value gate requires configured 4 percent edge', () => {
+test('moneyline value gate requires configured 5 percent edge', () => {
   const game = sampleGame({
     away: {
       id: 1,
@@ -343,7 +343,7 @@ test('moneyline value gate requires configured 4 percent edge', () => {
   assert.equal(game.valuePick.teamName, 'Thin Favorite');
   assert.equal(game.valuePick.edge, 3.4);
   assert.equal(game.betDecision.status, 'NO BET');
-  assert.ok(game.betDecision.reasons.some((reason) => /< 4\.0%/.test(reason)));
+  assert.ok(game.betDecision.reasons.some((reason) => /< 5\.0%/.test(reason)));
 });
 
 test('record dominated favorite is downgraded to no bet even with positive value', () => {

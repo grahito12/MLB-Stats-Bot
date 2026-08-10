@@ -1,6 +1,6 @@
 # Prediction Architecture
 
-**Status:** canonical moneyline core + recompute replay active (2026-07-28); totals remain a separate path; YRFI/NRFI removed (no edge, was advisory-only)
+**Status:** canonical moneyline core + recompute replay active (2026-07-28); totals remain a separate path (no live JS pure-core); YRFI/NRFI removed (no edge, was advisory-only). Phase 1 integrity (2026-08): picks append-only via `prediction_run_id` + `pick_processing`; CLV/P&L share ledger side (`src/clv_side.js`). Phase 2 selection (2026-08): moneyline edge floor default **5%** (`MINIMUM_MONEYLINE_EDGE=0.05`); rolling avg CLV gate + `/ledger` report (`src/clv_gate.js`) — selection only, no model-prob massage.
 
 ## Canonical production path (Telegram)
 

@@ -84,8 +84,16 @@ export function loadConfig() {
     postGameAlerts: boolFromEnv(process.env.POST_GAME_ALERTS, true),
     postGamePollMinutes: intFromEnv(process.env.POST_GAME_POLL_MINUTES, 5),
     modelMemory: boolFromEnv(process.env.MODEL_MEMORY, true),
-    minimumMoneylineEdge: numberFromEnv(process.env.MINIMUM_MONEYLINE_EDGE, 0.04),
+    // Phase 2 (2026-08): raised 0.04 → 0.05. Selection-only; does not change model probs.
+    minimumMoneylineEdge: numberFromEnv(process.env.MINIMUM_MONEYLINE_EDGE, 0.05),
     moneylineOddsMaxAgeMinutes: numberFromEnv(process.env.MONEYLINE_ODDS_MAX_AGE_MINUTES, 10),
+    // Rolling avg CLV gate for new VALUE bets (ledger selection quality).
+    clvGate: {
+      enabled: boolFromEnv(process.env.CLV_GATE_ENABLED, true),
+      minSample: intFromEnv(process.env.CLV_GATE_MIN_SAMPLE, 20),
+      minAvgClv: numberFromEnv(process.env.CLV_GATE_MIN_AVG, 0),
+      lookback: intFromEnv(process.env.CLV_GATE_LOOKBACK, 50)
+    },
     // Market-anchored residual probability for VALUE grading only. 0 disables
     // blending; positive values borrow a small amount of no-vig market signal
     // while keeping the model's own pick/winner intact.

@@ -22,7 +22,7 @@ const toggles = [
 ];
 
 const defaults = {
-  minimum_moneyline_edge: 0.04,
+  minimum_moneyline_edge: 0.05,
   minimum_total_edge: 0.02,
   minimum_projected_total_difference: 0.4,
   minimum_data_quality_score: 60,

@@ -247,7 +247,7 @@ class QualityControlTests(unittest.TestCase):
     def test_low_edge_returns_no_bet(self) -> None:
         result = apply_confidence_downgrade(_prediction(model_edge=0.03), generate_quality_report(_context()))
         self.assertEqual(result["decision"], "NO BET")
-        self.assertIn("model edge below 4%", result["decision_reason"])
+        self.assertIn("model edge below 5%", result["decision_reason"])
 
     def test_moneyline_edge_threshold_reads_dashboard_settings(self) -> None:
         import json

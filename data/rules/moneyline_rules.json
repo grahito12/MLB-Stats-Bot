@@ -2,9 +2,9 @@
   "version": "moneyline-rules-v1",
   "_doc": "Single source of truth for BOTH moneyline decision engines: the live JS engine (src/mlb.js valueSafetyReasons / applyMoneylineValueMarket) and the offline Python engine (src/quality_control.py apply_confidence_downgrade). Two interpreters read this file: src/rule_engine.js and src/rule_engine.py. INVARIANTS: (1) Rules are evaluated in ascending `order`, which mirrors the ORIGINAL source line sequence so reason/adjustment output stays byte-identical; `tier` is descriptive metadata per the README input-signal taxonomy (Tier1 pitcher/offense/bullpen/park/odds; Tier2 weather/lineup/form; Tier3 umpire/public/H2H) and does NOT affect evaluation order. (2) Predicate logic lives in per-language handlers (the `handler` key names the function); thresholds, messages, ordering, scope and tier live ONLY here. (3) Every rule's `handler` must exist in the registry of each engine it is scoped to, and every registered handler must be referenced by a rule (schema tests enforce both directions). (4) Numeric formatting stays in the handlers because JS (.toFixed) and Python (:.0f) format differently. Changing any id/engines/tier/order/action/message must keep both schema tests and both parity suites green.",
   "config_refs": {
-    "js_edge_threshold": "config.minimumMoneylineEdge (src/config.js) -> moneylineValueEdgeThreshold() in src/mlb.js; default 0.04 (scaled to percent)",
+    "js_edge_threshold": "config.minimumMoneylineEdge (src/config.js) -> moneylineValueEdgeThreshold() in src/mlb.js; default 0.05 (scaled to percent)",
     "js_odds_max_age": "config.moneylineOddsMaxAgeMinutes -> moneylineOddsMaxAgeMinutes() in src/mlb.js; default 10",
-    "py_edge_threshold": "dashboard_settings.json minimum_moneyline_edge -> _moneyline_edge_threshold() in src/quality_control.py; default 0.04"
+    "py_edge_threshold": "dashboard_settings.json minimum_moneyline_edge -> _moneyline_edge_threshold() in src/quality_control.py; default 0.05"
   },
   "rules": [
     {
