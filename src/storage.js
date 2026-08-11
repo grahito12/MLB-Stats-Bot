@@ -403,6 +403,12 @@ function toInteger(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function nullableFiniteNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function boolToInt(value) {
   return value ? 1 : 0;
 }
@@ -754,6 +760,7 @@ export class Storage {
     const replace = this.db.transaction(() => {
       this.db.prepare('DELETE FROM yrfi_results').run();
       this.db.prepare('DELETE FROM bet_ledger').run();
+      this.db.prepare('DELETE FROM shadow_ledger').run();
       this.db.prepare('DELETE FROM pick_processing').run();
       this.db.prepare('DELETE FROM picks').run();
       this.db.prepare('DELETE FROM chat_settings').run();
@@ -1368,6 +1375,10 @@ export class Storage {
           postGameProcessed: existing.postGameProcessed || false,
           postGameProcessedAt: existing.postGameProcessedAt || null
         });
+        // First CLV-blocked qualifying VALUE per game becomes a paper-only
+        // decision tied to this exact immutable pick version. INSERT OR IGNORE
+        // prevents later refreshes from cherry-picking another side or price.
+        this.recordShadowBet(compact, dateYmd);
       }
     });
 
@@ -1643,13 +1654,21 @@ export class Storage {
   }
 
   listPendingPredictionDates() {
+    // Include dates where pick_processing is still open OR an open shadow/real
+    // decision is stranded so the scheduler can retry recovery.
     return this.db
       .prepare(
         `SELECT DISTINCT p.date_ymd
          FROM picks p
          JOIN pick_processing pp ON pp.game_pk = p.game_pk
          WHERE pp.post_game_processed = 0 AND p.date_ymd <> ''
-         ORDER BY p.date_ymd`
+         UNION
+         SELECT DISTINCT date_ymd FROM shadow_ledger
+         WHERE status = 'open' AND date_ymd <> ''
+         UNION
+         SELECT DISTINCT date_ymd FROM bet_ledger
+         WHERE status = 'open' AND market = 'moneyline' AND date_ymd <> ''
+         ORDER BY date_ymd`
       )
       .all()
       .map((row) => row.date_ymd);
@@ -1817,6 +1836,210 @@ export class Storage {
   // writeYrfiOutcome deleted — stop writing/reading yrfi_results going forward.
   // Table CREATE TABLE IF NOT EXISTS yrfi_results retained so existing DBs keep
   // historical rows; do not DROP TABLE in production. Migration note: archive-only.
+
+  /**
+   * Record a paper-only moneyline decision when rolling CLV blocks a candidate
+   * that otherwise qualified as VALUE. First decision per game wins.
+   *
+   * This table is deliberately disconnected from bet_ledger, settlements,
+   * bankroll, model memory, evolution, and the production CLV gate.
+   */
+  recordShadowBet(prediction, dateYmd = prediction?.dateYmd || '') {
+    const decision = prediction?.betDecision;
+    const gate = decision?.clvGate;
+    const value = prediction?.valuePick;
+    if (decision?.status !== 'NO BET' || gate?.blocked !== true) return null;
+    if (!value) return null;
+
+    const gamePk = String(prediction.gamePk || '');
+    const market = 'moneyline';
+    const side = String(value.side || '');
+    const selectedTeamId =
+      value.teamId != null
+        ? String(value.teamId)
+        : side === 'home' && prediction.home?.id != null
+          ? String(prediction.home.id)
+          : side === 'away' && prediction.away?.id != null
+            ? String(prediction.away.id)
+            : '';
+    const odds = Number(value.odds);
+    const modelProb = Number(value.modelProbability);
+    const fairProb = Number(value.fairProbability);
+    const edge = Number(value.edge);
+    const stake = Number(value.kellyStakePercent);
+    const predictionRunId = String(prediction.predictionRunId || '');
+
+    if (!gamePk || !predictionRunId) return null;
+    if (side !== 'home' && side !== 'away') return null;
+    if (!selectedTeamId) return null;
+    if (!Number.isFinite(odds) || odds === 0) return null;
+    if (!Number.isFinite(modelProb) || !Number.isFinite(fairProb) || !Number.isFinite(edge)) {
+      return null;
+    }
+    if (!(stake > 0)) return null;
+
+    const modelPickTeamId =
+      prediction.modelBreakdown?.purePickTeamId != null
+        ? String(prediction.modelBreakdown.purePickTeamId)
+        : prediction.pick?.id != null
+          ? String(prediction.pick.id)
+          : prediction.winner?.id != null
+            ? String(prediction.winner.id)
+            : null;
+    const bookmaker =
+      value.book ||
+      value.bookmaker ||
+      prediction.currentOdds?.moneylineBook ||
+      prediction.currentOdds?.book ||
+      null;
+    const quoteId = value.quoteId || value.quote_id || null;
+    const decisionHash = hashDecisionPayload({
+      gamePk,
+      market,
+      selectedTeamId,
+      side,
+      odds,
+      modelProb,
+      fairProb,
+      edge,
+      stake,
+      bookmaker,
+      quoteId,
+      blockedBy: 'rolling_clv_gate'
+    });
+    const shadowDecisionId = `shadow-${dateYmd}-${market}-${gamePk}`;
+    const now = new Date().toISOString();
+
+    const info = this.db
+      .prepare(
+        `INSERT INTO shadow_ledger (
+          shadow_decision_id, game_pk, prediction_run_id, date_ymd, market,
+          team, side, selected_team_id, model_pick_team_id, odds,
+          fair_prob, model_prob, edge, simulated_units_staked, status,
+          blocked_by, block_reason, gate_avg_clv, gate_sample,
+          bookmaker, quote_id, decision_hash, model_version,
+          calibration_version, bet_policy_version, run_id, recommended_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open',
+                  'rolling_clv_gate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(game_pk, market) DO NOTHING`
+      )
+      .run(
+        shadowDecisionId,
+        gamePk,
+        predictionRunId,
+        String(dateYmd || prediction.dateYmd || ''),
+        market,
+        value.teamName || null,
+        side,
+        selectedTeamId,
+        modelPickTeamId,
+        odds,
+        fairProb,
+        modelProb,
+        edge,
+        stake,
+        gate.reason || decision.reason || null,
+        gate.avgClv == null ? null : Number(gate.avgClv),
+        gate.sample == null ? null : Number(gate.sample),
+        bookmaker,
+        quoteId,
+        decisionHash,
+        prediction.modelVersion || prediction.versions?.model || null,
+        prediction.calibrationVersion || prediction.versions?.calibration || null,
+        prediction.betPolicyVersion || prediction.versions?.betPolicy || null,
+        prediction.runId || null,
+        now
+      );
+
+    return info.changes === 1 ? shadowDecisionId : null;
+  }
+
+  readShadowLedger({ status = null, sinceDays = null } = {}) {
+    const clauses = ["market = 'moneyline'"];
+    const params = [];
+    if (status) {
+      clauses.push('status = ?');
+      params.push(String(status));
+    }
+    if (Number.isFinite(sinceDays)) {
+      const cutoff = new Date(Date.now() - sinceDays * 86400000).toISOString().slice(0, 10);
+      clauses.push('date_ymd >= ?');
+      params.push(cutoff);
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM shadow_ledger
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY date_ymd ASC, shadow_decision_id ASC`
+      )
+      .all(...params);
+  }
+
+  getOpenShadowBet(gamePk, market = 'moneyline') {
+    if (!gamePk) return null;
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM shadow_ledger
+           WHERE game_pk = ? AND market = ? AND status = 'open'
+           LIMIT 1`
+        )
+        .get(String(gamePk), String(market)) || null
+    );
+  }
+
+  getShadowLedgerSide(gamePk, market = 'moneyline') {
+    if (!gamePk) return null;
+    const row = this.db
+      .prepare(
+        `SELECT side FROM shadow_ledger
+         WHERE game_pk = ? AND market = ?
+         ORDER BY recommended_at ASC
+         LIMIT 1`
+      )
+      .get(String(gamePk), String(market));
+    return row?.side === 'home' || row?.side === 'away' ? row.side : null;
+  }
+
+  /**
+   * Settle one paper decision. Uses immutable shadow side, team ID, odds, and
+   * simulated stake. Idempotent status guard prevents duplicate paper P/L.
+   */
+  settleShadowBet(prediction, result, { clv = null, closingOdds = null } = {}) {
+    const gamePk = String(prediction?.gamePk || result?.gamePk || '');
+    const market = 'moneyline';
+    if (!gamePk) return false;
+
+    const row = this.getOpenShadowBet(gamePk, market);
+    if (!row) return false;
+
+    const winnerId = result?.winner?.id;
+    let outcome = 'loss';
+    let unitsPl = -Number(row.simulated_units_staked);
+    if (winnerId == null) {
+      outcome = 'push';
+      unitsPl = 0;
+    } else if (String(row.selected_team_id) === String(winnerId)) {
+      outcome = 'win';
+      const odds = Number(row.odds);
+      const profitMultiple = odds > 0 ? odds / 100 : 100 / Math.abs(odds);
+      unitsPl = Number(row.simulated_units_staked) * profitMultiple;
+    }
+
+    const roundedPl = Math.round(unitsPl * 1000) / 1000;
+    const settledAt = new Date().toISOString();
+    const validClose = nullableFiniteNumber(closingOdds);
+    const validClv = nullableFiniteNumber(clv);
+    const update = this.db
+      .prepare(
+        `UPDATE shadow_ledger
+         SET status = 'settled', result = ?, simulated_units_pl = ?,
+             closing_odds = ?, clv = ?, settled_at = ?
+         WHERE game_pk = ? AND market = ? AND status = 'open'`
+      )
+      .run(outcome, roundedPl, validClose, validClv, settledAt, gamePk, market);
+    return update.changes === 1;
+  }
 
   // Record a VALUE bet at decision time. Idempotent on (game_pk, market): a
   // re-run of /picks for the same game never creates a duplicate ledger row.
@@ -2081,63 +2304,76 @@ export class Storage {
   }
 
   /**
-   * Atomic post-game processing for a single prediction:
-   * 1) record memory/outcome
-   * 2) settle open value bet (if any)
-   * 3) mark pick processed only after settlement attempt is recorded
+   * Atomic post-game processing for one prediction:
+   * 1) record memory/outcome once
+   * 2) settle open real and paper decisions independently
+   * 3) mark pick processed only after every expected settlement succeeds
    *
-   * If settlement throws, the pick is NOT marked processed so the scheduler can retry.
-   * If there is no open bet, mark processed after outcome as before.
+   * A settlement failure throws so the transaction rolls back memory, outcome,
+   * ledger updates, and processing checkpoint together. Retry remains idempotent.
    */
-  processPostGameOutcome(prediction, result, { enabled = true, clv = null } = {}) {
+  processPostGameOutcome(
+    prediction,
+    result,
+    {
+      enabled = true,
+      clv = null,
+      shadowClv = null,
+      shadowClosingOdds = null
+    } = {}
+  ) {
     const gamePk = String(prediction?.gamePk || '');
     if (!gamePk) {
-      return { settled: false, processed: false, error: 'missing_game_pk' };
-    }
-
-    const existing = this.getPrediction(gamePk);
-    if (existing?.postGameProcessed) {
-      // Still try idempotent settle for stranded open+processed rows.
-      const settled = this.settleBet(prediction, result, clv);
-      return { settled, processed: true, retriedStranded: true };
+      return {
+        settled: false,
+        shadowSettled: false,
+        processed: false,
+        error: 'missing_game_pk'
+      };
     }
 
     try {
       const run = this.db.transaction(() => {
-        // Outcome/memory first, but do not mark processed inside recordOutcome path
-        // when we control the checkpoint here.
-        this.recordOutcomeWithoutProcessedMark(prediction, result, { enabled });
+        const existing = this.getPrediction(gamePk);
+        const openReal = this.getOpenBet(gamePk, 'moneyline');
+        const openShadow = this.getOpenShadowBet(gamePk, 'moneyline');
 
-        const open = this.db
-          .prepare("SELECT decision_id FROM bet_ledger WHERE game_pk = ? AND status = 'open'")
-          .get(gamePk);
-
-        let settled = false;
-        if (open) {
-          // Mark pending so operators can see settle-in-progress after crash mid-tx
-          // (transaction rollback clears this if we fail before commit).
-          this.db
-            .prepare(
-              `UPDATE bet_ledger SET settlement_pending = 1
-               WHERE game_pk = ? AND status = 'open'`
-            )
-            .run(gamePk);
-          settled = this.settleBet(prediction, result, clv);
-          if (open && !settled) {
-            // Keep open + not processed for retry.
-            this.db
-              .prepare(
-                `UPDATE bet_ledger SET settlement_pending = 0
-                 WHERE game_pk = ? AND status = 'open'`
-              )
-              .run(gamePk);
-            return { settled: false, processed: false, error: 'settle_failed' };
+        if (!existing?.postGameProcessed) {
+          // Only record memory/outcome when there is a real bet to settle
+          // OR the pick was explicitly processed. Shadow-only settlement is
+          // paper-only and must not increment model memory.
+          if (openReal) {
+            this.recordOutcomeWithoutProcessedMark(prediction, result, { enabled });
           }
         }
 
-        this.markPostGameProcessedRow(gamePk);
+        let settled = false;
+        if (openReal) {
+          this.db
+            .prepare(
+              `UPDATE bet_ledger SET settlement_pending = 1
+               WHERE game_pk = ? AND market = 'moneyline' AND status = 'open'`
+            )
+            .run(gamePk);
+          settled = this.settleBet(prediction, result, clv);
+          if (!settled) throw new Error('settle_failed');
+        }
+
+        let shadowSettled = false;
+        if (openShadow) {
+          shadowSettled = this.settleShadowBet(prediction, result, {
+            clv: shadowClv,
+            closingOdds: shadowClosingOdds
+          });
+          if (!shadowSettled) throw new Error('shadow_settle_failed');
+        }
+
+        if (!existing?.postGameProcessed) {
+          this.markPostGameProcessedRow(gamePk);
+        }
 
         try {
+          const now = new Date().toISOString();
           this.db
             .prepare(
               `INSERT INTO outbox (outbox_id, event_type, aggregate_id, payload, created_at, available_at)
@@ -2147,15 +2383,20 @@ export class Storage {
               `postgame-${gamePk}-${Date.now()}`,
               'postgame_processed',
               gamePk,
-              toJson({ gamePk, settled, clv }),
-              new Date().toISOString(),
-              new Date().toISOString()
+              toJson({ gamePk, settled, shadowSettled, clv, shadowClv }),
+              now,
+              now
             );
         } catch {
           // outbox optional
         }
 
-        return { settled, processed: true };
+        return {
+          settled,
+          shadowSettled,
+          processed: true,
+          retriedStranded: Boolean(existing?.postGameProcessed && (openReal || openShadow))
+        };
       });
 
       const resultInfo = run();
@@ -2164,6 +2405,7 @@ export class Storage {
     } catch (error) {
       return {
         settled: false,
+        shadowSettled: false,
         processed: false,
         error: error?.message || String(error)
       };

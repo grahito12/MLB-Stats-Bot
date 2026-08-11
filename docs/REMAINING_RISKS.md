@@ -34,6 +34,7 @@ data wall, and evaluator market baselines.
 | Multi-factor confidence (SP/form/H2H/injury/lineup) | **Live** (`js.factor_confidence` + sizing) — blocks weak-factor VALUE; stake 0.75–1.25x. Free StatsAPI signals only. |
 | Moneyline edge floor | **Phase 2 live (2026-08-10)** — default `MINIMUM_MONEYLINE_EDGE=0.05` (was 0.04). Selection only; no model-prob change. Historical ledger (graded under 4%) unchanged — new floor applies to NEW VALUE bets only. |
 | Rolling avg CLV gate | **Phase 2 live (2026-08-10)** — blocks new VALUE when rolling avg CLV < 0 with n≥20 settled moneyline (`src/clv_gate.js`, env `CLV_GATE_*`); `/ledger` reports avg CLV + gate status. Applied after news veto on every prediction path. |
+| Shadow ledger forward validation | **Phase 4 live (2026-08-11)** — blocked VALUE candidates enter isolated paper `shadow_ledger` (append-only, first-write per game/market, recommendation-price CLV). `/shadow` reports simulated P/L, CLV, Brier. Never touches real bankroll, memory, evolution, or gate. Target ≥50 settled (ideally 100 / ~30 days) before manual gate review. |
 
 ## P2
 

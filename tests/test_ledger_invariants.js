@@ -92,6 +92,12 @@ test('migrations apply and status is idempotent', () => {
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settlements'")
       .get()
   );
+  assert.ok(
+    storage.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shadow_ledger'")
+      .get()
+  );
+  assert.ok(status.skipped.includes('005_shadow_ledger'));
   storage.close();
 });
 

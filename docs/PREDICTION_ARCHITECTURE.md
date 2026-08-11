@@ -25,9 +25,27 @@ Post-game:
 
 ```text
 evaluatePostGames
-  -> CLV from ledger/value side
-  -> processPostGameOutcome (outcome -> settle -> mark processed)
+  -> CLV from ledger/value side for real bets
+  -> shadow CLV from recommendation odds for paper decisions
+  -> processPostGameOutcome (outcome -> settle real + shadow -> mark processed)
   -> calibration proposal only (no auto-promote)
+  -> shadow settlement never triggers evolution or memory increment
+```
+
+Shadow ledger (Phase 4, 2026-08-11):
+```text
+VALUE candidate (post-news)
+  -> rolling CLV gate blocks it -> NO BET with clvGate.blocked=true
+  -> savePredictions: recordShadowBet captures first qualifying
+     (game_pk, market) decision into isolated shadow_ledger
+  -> INSERT OR IGNORE prevents later prediction refreshes from
+     cherry-picking a different side, price, or stake
+  -> post-game: settleShadowBet uses frozen odds/side/stake
+  -> paper P/L, CLV, and Brier report via /shadow
+  -> never enters bet_ledger, settlements, model memory, evolution,
+     or production CLV gate
+  -> minimum 50 settled, ideal 100 / ~30 days forward validation
+     before any manual gate-reopening discussion
 ```
 
 ## Target path

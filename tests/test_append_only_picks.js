@@ -230,6 +230,54 @@ test('listPendingPredictionDates uses game_pk join and survives version bump', (
   storage.close();
 });
 
+test('listPendingPredictionDates includes open shadow and stranded open real rows', () => {
+  const { storage } = freshStorage();
+  const away = team(30, 'Away', 'AWY');
+  const home = team(40, 'Home', 'HOM');
+  const dateYmd = '2026-08-11';
+
+  // Insert a pick that is already processed but has an open shadow row.
+  // This simulates the stranded-shadow recovery scenario.
+  const pred = valuePrediction(900010, dateYmd, away, home, 'away', {
+    odds: 150, stake: 2, model: 58, fair: 50, teamId: 30
+  });
+  storage.savePredictions(dateYmd, [pred]);
+  const pick = storage.getPrediction(900010);
+  storage.markPostGameProcessed(900010);
+  assert.deepEqual(storage.listPendingPredictionDates(), []);
+
+  // Manually insert an open shadow row for the processed game using the
+  // real prediction_run_id so the FK constraint is satisfied.
+  storage.db.prepare(`INSERT INTO shadow_ledger (
+    shadow_decision_id, game_pk, prediction_run_id, date_ymd, market,
+    team, side, selected_team_id, odds, fair_prob, model_prob, edge,
+    simulated_units_staked, status, blocked_by, decision_hash, recommended_at
+  ) VALUES (?, ?, ?, ?, 'moneyline', ?, ?, ?, ?, ?, ?, ?, ?, 'open', 'rolling_clv_gate', ?, ?)`)
+    .run(
+      'shadow-2026-08-11-moneyline-900010', '900010', pick.predictionRunId,
+      dateYmd, 'Away', 'away', '30', 150, 50, 58, 8, 2,
+      'fake-hash', new Date().toISOString()
+    );
+
+  assert.deepEqual(storage.listPendingPredictionDates(), [dateYmd]);
+
+  // Clean up then verify stranded real open row also surfaces.
+  storage.db.prepare('DELETE FROM shadow_ledger').run();
+  storage.db.prepare(`INSERT INTO bet_ledger (
+    decision_id, game_pk, prediction_run_id, date_ymd, market, team, side, odds,
+    fair_prob, model_prob, edge, units_staked, status, recommended_at,
+    decision_hash, selected_team_id
+  ) VALUES (?, ?, ?, ?, 'moneyline', ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`)
+    .run(
+      '2026-08-11-moneyline-900010', '900010', pick.predictionRunId, dateYmd,
+      'Away', 'away', 150, 50, 58, 8, 2, new Date().toISOString(), 'fake-hash', '30'
+    );
+
+  assert.deepEqual(storage.listPendingPredictionDates(), [dateYmd]);
+
+  storage.close();
+});
+
 test('processPostGameOutcome atomic: settle failure leaves open + unprocessed', () => {
   const { storage } = freshStorage();
   const away = team(5, 'Away', 'AWY');

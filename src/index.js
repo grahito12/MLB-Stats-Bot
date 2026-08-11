@@ -28,6 +28,7 @@ import { UI_LINE, UI_THIN_LINE, uiBullet, uiCommand, uiKV, uiSection, uiTitle } 
 import { dateInTimezone, isValidDateYmd, percent, timeInTimezone, weekdayInTimezone } from './utils.js';
 import { startDashboard } from './dashboard.js';
 import { formatLedgerReport } from './ledgerReport.js';
+import { formatShadowLedgerReport } from './shadowLedgerReport.js';
 import {
   attachCurrentOdds,
   americanImpliedProbability,
@@ -73,7 +74,8 @@ function helpText() {
     uiCommand('/picks YYYY-MM-DD', 'top pick untuk tanggal tertentu'),
     uiCommand('/predict', 'prediksi semua game MLB hari ini'),
     uiCommand('/predict YYYY-MM-DD', 'prediksi semua game pada tanggal tertentu'),
-    uiCommand('/ledger', 'rekap bet ledger: open, record, units P/L, ROI'),
+    uiCommand('/ledger', 'rekap bet nyata: open, record, units P/L, ROI'),
+    uiCommand('/shadow', 'paper ledger kandidat VALUE yang diblokir CLV gate'),
     uiCommand('/analyze', 'analisa edge, risk, value, dan no-bet slate hari ini'),
     uiCommand('/analyze TEAM', 'analisa tim/game tertentu dari data bot'),
     uiCommand('/news', 'ringkas external MLB/ESPN/Yahoo context plus risk data bot'),
@@ -97,6 +99,8 @@ function botCommandList() {
     { command: 'deep', description: 'Semua game dengan statistik lengkap' },
     { command: 'picks', description: 'Top model picks' },
     { command: 'predict', description: 'Prediksi semua game MLB' },
+    { command: 'ledger', description: 'Rekap bet nyata' },
+    { command: 'shadow', description: 'Paper ledger CLV-blocked' },
     { command: 'analyze', description: 'Analisa slate atau tim' },
     { command: 'news', description: 'External news + risk context' },
     { command: 'game', description: 'Cek tim tertentu hari ini' },
@@ -427,7 +431,6 @@ async function attachMarketContext(predictions) {
     applyMoneylineValueMarket(prediction);
   }
 
-  applyRollingClvGate(predictions);
   return predictions;
 }
 
@@ -1565,17 +1568,34 @@ function resolveClvSide(prediction, storageRef = storage) {
   return resolveClvSideCore(prediction, storageRef, { requireValueSide: hasValueBet });
 }
 
+function computeClvFromOdds(openingLine, closingLine) {
+  const openingImplied = americanImpliedProbability(openingLine);
+  const closingImplied = americanImpliedProbability(closingLine);
+  if (!Number.isFinite(openingImplied) || !Number.isFinite(closingImplied)) return null;
+  // CLV as implied-probability edge: positive means recommendation beat close.
+  return Math.round((closingImplied - openingImplied) * 1000) / 10;
+}
+
 function computeMoneylineClv(prediction, gamePk, side) {
+  if (side !== 'home' && side !== 'away') return null;
   const openingOdds = prediction.openingOdds;
   if (!openingOdds) return null;
   const closingLine = resolveClosingLine(gamePk, side);
   if (!Number.isFinite(closingLine)) return null;
   const openingLine = side === 'home' ? openingOdds.homeMoneyline : openingOdds.awayMoneyline;
-  const openingImplied = americanImpliedProbability(openingLine);
-  const closingImplied = americanImpliedProbability(closingLine);
-  if (!Number.isFinite(openingImplied) || !Number.isFinite(closingImplied)) return null;
-  // CLV as implied-probability edge: positive means we beat the closing line.
-  return Math.round((closingImplied - openingImplied) * 1000) / 10;
+  return computeClvFromOdds(openingLine, closingLine);
+}
+
+function computeShadowMoneylineClv(shadowRow, gamePk) {
+  if (!shadowRow || (shadowRow.side !== 'home' && shadowRow.side !== 'away')) {
+    return { clv: null, closingOdds: null };
+  }
+  const closingOdds = resolveClosingLine(gamePk, shadowRow.side);
+  if (!Number.isFinite(closingOdds)) return { clv: null, closingOdds: null };
+  return {
+    clv: computeClvFromOdds(Number(shadowRow.odds), closingOdds),
+    closingOdds
+  };
 }
 
 async function evaluatePostGames(dateYmd, { markProcessed = true, includeProcessed = false } = {}) {
@@ -1588,13 +1608,16 @@ async function evaluatePostGames(dateYmd, { markProcessed = true, includeProcess
     if (!prediction) continue;
 
     const openBet = storage.getOpenBet(result.gamePk, 'moneyline');
+    const openShadowBet = storage.getOpenShadowBet(result.gamePk, 'moneyline');
     const hasOpenBet = Boolean(openBet);
-    // Skip only when already processed AND no stranded open bet to recover.
+    const hasOpenShadowBet = Boolean(openShadowBet);
+    // Skip only when processed and no stranded real/paper decision needs recovery.
     if (
       prediction.postGameProcessed &&
       markProcessed &&
       !includeProcessed &&
-      !hasOpenBet
+      !hasOpenBet &&
+      !hasOpenShadowBet
     ) {
       continue;
     }
@@ -1602,17 +1625,25 @@ async function evaluatePostGames(dateYmd, { markProcessed = true, includeProcess
     const correct = prediction.pick.id === result.winner.id;
     const clvSide = resolveClvSide(prediction, storage);
     const clv = computeMoneylineClv(prediction, result.gamePk, clvSide);
+    const shadowClose = computeShadowMoneylineClv(openShadowBet, result.gamePk);
 
     const shouldProcess =
-      markProcessed && (!prediction.postGameProcessed || hasOpenBet);
+      markProcessed && (!prediction.postGameProcessed || hasOpenBet || hasOpenShadowBet);
 
     let learned = false;
     if (shouldProcess) {
       const outcome = storage.processPostGameOutcome(prediction, result, {
         enabled: config.modelMemory,
-        clv
+        clv,
+        shadowClv: shadowClose.clv,
+        shadowClosingOdds: shadowClose.closingOdds
       });
-      learned = Boolean(outcome.processed) || Boolean(outcome.settled);
+      // Only real memory/outcome + real settlement count as "learned" for
+      // evolution triggers. Shadow settlement is paper-only and must never
+      // independently drive evolution, auto-retrain, or guardrail reopening.
+      learned =
+        Boolean(outcome.processed) ||
+        Boolean(outcome.settled);
       if (outcome.error) {
         console.error('processPostGameOutcome failed:', outcome.error);
       }
@@ -1627,7 +1658,9 @@ async function evaluatePostGames(dateYmd, { markProcessed = true, includeProcess
       correct,
       learned,
       clv,
-      clvSide
+      clvSide,
+      shadowClv: shadowClose.clv,
+      shadowSide: openShadowBet?.side || null
     });
   }
 
@@ -1860,6 +1893,17 @@ async function handleMessage(bot, message) {
       await bot.sendMessage(chatId, formatLedgerReport(rows, { clvGate: config.clvGate }));
     } finally {
       releaseCommandLock(chatId, 'ledger');
+    }
+    return;
+  }
+
+  if (command === '/shadow') {
+    if (!acquireCommandLock(chatId, 'shadow')) return;
+    try {
+      const rows = storage.readShadowLedger();
+      await bot.sendMessage(chatId, formatShadowLedgerReport(rows));
+    } finally {
+      releaseCommandLock(chatId, 'shadow');
     }
     return;
   }
