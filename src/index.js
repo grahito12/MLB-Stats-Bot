@@ -334,8 +334,16 @@ async function attachMarketContext(predictions) {
       if (Number.isFinite(pureHome)) prediction.modelBreakdown.pureHomeProbability = pureHome;
       if (Number.isFinite(pureAway)) prediction.modelBreakdown.pureAwayProbability = pureAway;
     }
-    if (Number.isFinite(pureHome)) prediction.home.winProbability = pureHome;
-    if (Number.isFinite(pureAway)) prediction.away.winProbability = pureAway;
+    if (Number.isFinite(pureHome)) {
+      prediction.home.winProbability = pureHome;
+      prediction.home.displayProbability = pureHome;
+      prediction.home.valueModelProbability = pureHome;
+    }
+    if (Number.isFinite(pureAway)) {
+      prediction.away.winProbability = pureAway;
+      prediction.away.displayProbability = pureAway;
+      prediction.away.valueModelProbability = pureAway;
+    }
     if (Number.isFinite(pureHome) && Number.isFinite(pureAway)) {
       prediction.winner = pureHome >= pureAway ? prediction.home : prediction.away;
     }
@@ -377,6 +385,8 @@ async function attachMarketContext(predictions) {
           const newAway = 100 - newHome;
           prediction.home.marketInformedProbability = newHome;
           prediction.away.marketInformedProbability = newAway;
+          prediction.home.displayProbability = newHome;
+          prediction.away.displayProbability = newAway;
           prediction.home.winProbability = newHome;
           prediction.away.winProbability = newAway;
           if (prediction.modelBreakdown) {

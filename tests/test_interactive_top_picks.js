@@ -84,6 +84,28 @@ test('top picks filters out a coinflip pick below the quality threshold', () => 
   assert.doesNotMatch(answer, /Coin (Away|Home)/);
 });
 
+test('optional external news display does not change model ranking or probability', () => {
+  const withNews = prediction(1, 'Away One', 'Home One', 40, 60, 'Home One model edge.', {
+    newsContext: {
+      status: 'ok',
+      articles: [{ sourceName: 'MLB', title: 'Away One roster update' }]
+    }
+  });
+  const stronger = prediction(2, 'Away Two', 'Home Two', 65, 35, 'Away Two model edge.');
+  const answer = buildTopPicksAnswer(
+    [withNews, stronger],
+    'best 5 top pick for today',
+    5,
+    null,
+    { includeNews: true }
+  );
+  assert.match(answer, /External \| \[MLB\] Away One roster update/);
+  const firstPickHeader = answer.split('\n').find((line) => /^1\./.test(line.trim())) || '';
+  assert.match(firstPickHeader, /AWA ML/);
+  assert.match(answer, /Away Two menang  \|  65%/);
+  assert.match(answer, /Home One menang  \|  60%/);
+});
+
 test('mixed slate labels edge tipis fallbacks honestly', () => {
   // One quality VALUE pick + several NO BET picks (all non-coinflip so they
   // fill the remaining slots). The header must disclose the thin-edge picks

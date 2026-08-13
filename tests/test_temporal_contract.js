@@ -67,6 +67,23 @@ test('assertPregameEligible rejects observation after as_of / first pitch', () =
   assert.equal(missing.reason, 'missing_as_of');
 });
 
+test('assertPregameEligible requires producer time strictly before first pitch', () => {
+  const atPitch = assertPregameEligible({
+    asOf: '2026-07-27T18:00:00Z',
+    firstPitch: '2026-07-27T18:00:00Z'
+  });
+  assert.deepEqual(atPitch, { ok: false, reason: 'as_of_at_first_pitch' });
+
+  const afterPitchWithinOldSkew = assertPregameEligible({
+    asOf: '2026-07-27T18:00:30Z',
+    firstPitch: '2026-07-27T18:00:00Z'
+  });
+  assert.deepEqual(afterPitchWithinOldSkew, {
+    ok: false,
+    reason: 'as_of_after_first_pitch'
+  });
+});
+
 test('mlb odds age: future fetchedAt is unavailable, not age 0', () => {
   const now = Date.parse('2026-07-27T12:00:00Z');
   const item = {

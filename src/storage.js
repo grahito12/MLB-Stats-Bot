@@ -7,6 +7,9 @@ import { applyMigrations } from './storage/migrations.js';
 import { getCalibrationArtifact, freezeCalibrationArtifact } from './calibration.js';
 import { buildPredictionSnapshot } from './prediction_snapshot.js';
 import { writeSnapshotFile } from './prediction_serializer.js';
+import { buildFeatureVector, flattenFeatureVector, classifyInformationState, FEATURE_VECTOR_SCHEMA_VERSION } from './core/feature_vector.js';
+import { HEURISTIC_V1_MODEL_ID, HEURISTIC_V1_IMPL_VERSION, CONTROL_FEATURE_SCHEMA_VERSION } from './core/model_ids.js';
+import { scoreShadowChallengers } from './core/model_registry.js';
 
 const DEFAULT_STATE = {
   lastUpdateId: 0,
@@ -240,24 +243,34 @@ function normalizeState(state) {
 
 function compactPrediction(prediction, dateYmd) {
   const agent = prediction.agentAnalysis;
-  // Deterministic probabilities only. LLM/agent may not rewrite win probabilities.
+  // Deterministic display probabilities only. LLM/agent may not rewrite them.
   const awayProbability = Math.round(
-    prediction.away.winProbability ?? prediction.away.pureModelProbability ?? 50
+    prediction.away.displayProbability ??
+      prediction.away.winProbability ??
+      prediction.away.pureModelProbability ??
+      50
   );
   const homeProbability = Math.round(
-    prediction.home.winProbability ?? prediction.home.pureModelProbability ?? 50
+    prediction.home.displayProbability ??
+      prediction.home.winProbability ??
+      prediction.home.pureModelProbability ??
+      50
   );
-  // Authoritative pick is model/value side — never analyst-only identity.
-  // Prefer pure model winner, then displayed winner; valuePick is separate in valuePick field.
+  const pureAwayProbability =
+    prediction.away.pureModelProbability ??
+    prediction.modelBreakdown?.pureAwayProbability ??
+    awayProbability;
+  const pureHomeProbability =
+    prediction.home.pureModelProbability ??
+    prediction.modelBreakdown?.pureHomeProbability ??
+    homeProbability;
+  // Persist pure control winner. Display blend and VALUE side remain separately named.
   const modelPick =
-    prediction.winner ||
-    (homeProbability >= awayProbability ? prediction.home : prediction.away);
+    Number(pureHomeProbability) >= Number(pureAwayProbability)
+      ? prediction.home
+      : prediction.away;
   const pickProbability =
-    modelPick.id === prediction.away.id
-      ? awayProbability
-      : modelPick.id === prediction.home.id
-        ? homeProbability
-        : Math.round(prediction.winner?.winProbability ?? Math.max(awayProbability, homeProbability));
+    modelPick.id === prediction.away.id ? pureAwayProbability : pureHomeProbability;
 
   return {
     gamePk: prediction.gamePk,
@@ -270,9 +283,23 @@ function compactPrediction(prediction, dateYmd) {
       name: prediction.away.name,
       abbreviation: prediction.away.abbreviation,
       winProbability: awayProbability,
+      displayProbability: awayProbability,
       winProbabilityRaw: prediction.away.winProbabilityRaw ?? awayProbability,
-      pureModelProbability: prediction.away.pureModelProbability ?? prediction.modelBreakdown?.pureAwayProbability ?? awayProbability,
-      marketInformedProbability: prediction.away.marketInformedProbability ?? prediction.modelBreakdown?.marketInformedAwayProbability ?? null,
+      rawBaseballProbability:
+        prediction.away.rawBaseballProbability ??
+        prediction.modelBreakdown?.rawAwayProbability ??
+        prediction.away.winProbabilityRaw ??
+        null,
+      pureModelProbability: pureAwayProbability,
+      marketInformedProbability:
+        prediction.away.marketInformedProbability ??
+        prediction.modelBreakdown?.marketInformedAwayProbability ??
+        null,
+      valueModelProbability:
+        prediction.away.valueModelProbability ??
+        prediction.moneylineValueOptions?.find((option) => option.side === 'away')
+          ?.gradingProbability ??
+        pureAwayProbability,
       record: prediction.away.record || null
     },
     home: {
@@ -280,9 +307,23 @@ function compactPrediction(prediction, dateYmd) {
       name: prediction.home.name,
       abbreviation: prediction.home.abbreviation,
       winProbability: homeProbability,
+      displayProbability: homeProbability,
       winProbabilityRaw: prediction.home.winProbabilityRaw ?? homeProbability,
-      pureModelProbability: prediction.home.pureModelProbability ?? prediction.modelBreakdown?.pureHomeProbability ?? homeProbability,
-      marketInformedProbability: prediction.home.marketInformedProbability ?? prediction.modelBreakdown?.marketInformedHomeProbability ?? null,
+      rawBaseballProbability:
+        prediction.home.rawBaseballProbability ??
+        prediction.modelBreakdown?.rawHomeProbability ??
+        prediction.home.winProbabilityRaw ??
+        null,
+      pureModelProbability: pureHomeProbability,
+      marketInformedProbability:
+        prediction.home.marketInformedProbability ??
+        prediction.modelBreakdown?.marketInformedHomeProbability ??
+        null,
+      valueModelProbability:
+        prediction.home.valueModelProbability ??
+        prediction.moneylineValueOptions?.find((option) => option.side === 'home')
+          ?.gradingProbability ??
+        pureHomeProbability,
       record: prediction.home.record || null
     },
     pick: {
@@ -318,6 +359,17 @@ function compactPrediction(prediction, dateYmd) {
           reasons: prediction.firstInning.agent?.reasons || prediction.firstInning.reasons || []
         }
       : null,
+    modelId: prediction.modelId || prediction.modelBreakdown?.modelId || null,
+    modelVersion: prediction.modelVersion || prediction.modelBreakdown?.modelVersion || null,
+    modelImplVersion:
+      prediction.modelImplVersion || prediction.modelBreakdown?.modelImplVersion || null,
+    featureVersion: prediction.featureVersion || null,
+    featureSchemaVersion:
+      prediction.featureSchemaVersion ||
+      prediction.modelBreakdown?.featureSchemaVersion ||
+      null,
+    featureRoleVersion: prediction.featureRoleVersion || null,
+    featureRoles: prediction.featureRoles || null,
     modelBreakdown: prediction.modelBreakdown || null,
     modelBreakdownLine: prediction.modelBreakdownLine || '',
     currentOdds: prediction.currentOdds || null,
@@ -348,7 +400,11 @@ function compactPrediction(prediction, dateYmd) {
     snapshotPath: prediction.snapshotPath || null,
     versions: prediction.versions || null,
     newsContext: prediction.newsContext || null,
-    featureSnapshot: prediction.featureSnapshot || null
+    featureSnapshot: prediction.featureSnapshot || null,
+    featureAvailability: prediction.featureAvailability || null,
+    featureFallbacks: prediction.featureFallbacks || null,
+    featureProvenance: prediction.featureProvenance || null,
+    predictionQuality: prediction.predictionQuality || null
   };
 }
 
@@ -364,6 +420,18 @@ function parseJson(value, fallback) {
 
 function toJson(value) {
   return JSON.stringify(value ?? null);
+}
+
+// Deterministic stable stringification of frozen coreInputs for hashing.
+// Keys sorted at every object level; values as-is. Used to bind a run to its
+// exact frozen evidence object (core_inputs_hash).
+function stableStringifyCoreInputs(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringifyCoreInputs).join(',')}]`;
+  }
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringifyCoreInputs(value[k])}`).join(',')}}`;
 }
 
 // Normalize a feature-fallback payload (the Python FallbackTracker.summary())
@@ -1227,6 +1295,12 @@ export class Storage {
           // Never let a later mutable prediction overwrite the replay authority.
           if (stored.coreInputs) prediction.coreInputs = stored.coreInputs;
           if (stored.features) prediction.featureSnapshot = stored.features;
+          if (stored.featureAvailability) {
+            prediction.featureAvailability = stored.featureAvailability;
+          }
+          if (stored.featureFallbacks) prediction.featureFallbacks = stored.featureFallbacks;
+          if (stored.featureProvenance) prediction.featureProvenance = stored.featureProvenance;
+          if (stored.predictionQuality) prediction.predictionQuality = stored.predictionQuality;
           if (stored.calibrationArtifact) prediction.calibrationArtifact = stored.calibrationArtifact;
           if (!prediction.versions) prediction.versions = {};
           prediction.versions.calibration = prediction.calibrationVersion;
@@ -1238,16 +1312,28 @@ export class Storage {
       // Frozen artifact (with mapping) so replay reconstructs the exact map.
       const frozenCal = freezeCalibrationArtifact('moneyline');
       prediction.calibrationArtifact = frozenCal;
-      const asOfUtc = new Date().toISOString();
+      // Producer time comes from inference. Storage wall time must never make a
+      // late row look pregame or replace exact evidence time.
+      const asOfUtc =
+        prediction.asOfUtc ||
+        prediction.predictionTimestampUtc ||
+        new Date().toISOString();
+      const predictionTimestampUtc =
+        prediction.predictionTimestampUtc || prediction.asOfUtc || asOfUtc;
       const snapshot = buildPredictionSnapshot({
         prediction,
         dateYmd,
         asOfUtc,
-        predictionTimestampUtc: asOfUtc,
+        predictionTimestampUtc,
         firstPitchUtc: prediction.startTime || null,
         versions: {
+          modelId: prediction.modelId || prediction.versions?.modelId || null,
           modelVersion: prediction.modelVersion || prediction.versions?.model || 'mlb-js-live',
+          modelImplVersion:
+            prediction.modelImplVersion || prediction.versions?.modelImplVersion || null,
           featureVersion: prediction.featureVersion || prediction.versions?.feature || 'live-features',
+          featureSchemaVersion:
+            prediction.featureSchemaVersion || prediction.versions?.featureSchemaVersion || null,
           calibrationVersion: cal.calibrationVersion,
           betPolicyVersion: prediction.betPolicyVersion || prediction.versions?.betPolicy || 'value-v1'
         },
@@ -1280,6 +1366,10 @@ export class Storage {
           quotes: snapshot.quotes,
           coreInputs: snapshot.coreInputs,
           features: snapshot.features,
+          featureAvailability: snapshot.featureAvailability,
+          featureFallbacks: snapshot.featureFallbacks,
+          featureProvenance: snapshot.featureProvenance,
+          predictionQuality: snapshot.predictionQuality,
           calibration: frozenCal,
           calibrationArtifact: snapshot.calibrationArtifact
         },
@@ -1300,13 +1390,42 @@ export class Storage {
       try {
         const runId = `run-${prediction.gamePk}-${snapshot.snapshotHash.slice(0, 16)}`;
         prediction.runId = prediction.runId || runId;
+
+        // Build the normalized feature vector from the FROZEN core inputs so the
+        // offline trainer has an exact, replayable X matrix per run. Computed
+        // once; persisted into the migration-006 columns. Missing values stay
+        // null with missingness indicators — never fabricated.
+        let featureVectorFlat = null;
+        let featureHash = null;
+        let coreInputsHash = null;
+        let featureManifestVersion = null;
+        try {
+          const coreInputs = snapshot.coreInputs || prediction.coreInputs || null;
+          if (coreInputs) {
+            const vector = buildFeatureVector(coreInputs);
+            featureVectorFlat = flattenFeatureVector(vector);
+            featureHash = vector.featureVectorHash || null;
+            featureManifestVersion = FEATURE_VECTOR_SCHEMA_VERSION;
+            // core_inputs_hash binds the run to its frozen evidence object.
+            coreInputsHash = createHash('sha256')
+              .update(stableStringifyCoreInputs(coreInputs))
+              .digest('hex');
+          }
+        } catch {
+          // feature vector build must never break the run row
+        }
+
         this.db
           .prepare(
             `INSERT INTO prediction_runs (
               run_id, game_pk, market, date_ymd, prediction_timestamp_utc, as_of_utc,
               first_pitch_utc, model_version, feature_version, calibration_version,
-              bet_policy_version, snapshot_hash, payload, created_at
-            ) VALUES (?, ?, 'moneyline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              bet_policy_version, snapshot_hash, payload, created_at,
+              model_id, model_impl_version, feature_schema_version,
+              information_state, prediction_quality_status, producer_timestamp_utc,
+              feature_hash, core_inputs_hash, normalized_feature_vector,
+              feature_manifest_version
+            ) VALUES (?, ?, 'moneyline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO NOTHING`
           )
           .run(
@@ -1326,10 +1445,128 @@ export class Storage {
               betDecision: prediction.betDecision || null,
               snapshotPath: prediction.snapshotPath || null
             }),
-            asOfUtc
+            asOfUtc,
+            snapshot.versions.modelId || HEURISTIC_V1_MODEL_ID,
+            snapshot.versions.modelImplVersion || HEURISTIC_V1_IMPL_VERSION,
+            snapshot.versions.featureSchemaVersion || CONTROL_FEATURE_SCHEMA_VERSION,
+            this.computeInformationState({
+              asOfUtc: snapshot.asOfUtc,
+              firstPitchUtc: snapshot.firstPitchUtc,
+              lineupsConfirmed: prediction.bothLineupsConfirmed ?? false
+            }),
+            snapshot.predictionQuality?.status || null,
+            snapshot.predictionTimestampUtc,
+            featureHash,
+            coreInputsHash,
+            featureVectorFlat ? toJson(featureVectorFlat) : null,
+            featureManifestVersion
           );
       } catch {
         // table may be missing on partial fixtures
+      }
+
+      // All-game model_predictions row for the control heuristic_v1. One row
+      // per eligible scheduled game, INCLUDING NO BET games — outcomes remain
+      // separate labels. This is the research truth table, not the bet ledger.
+      try {
+        const infoState = this.computeInformationState({
+          asOfUtc: snapshot.asOfUtc,
+          firstPitchUtc: snapshot.firstPitchUtc,
+          lineupsConfirmed: prediction.bothLineupsConfirmed ?? false
+        });
+        const promotionEligible =
+          infoState !== 'ineligible' &&
+          snapshot.predictionQuality?.status !== 'INELIGIBLE_TEMPORAL';
+        const promotionReasons = promotionEligible
+          ? null
+          : JSON.stringify({ informationState, quality: snapshot.predictionQuality?.status || null });
+        const rawHome = snapshot.modelInputs?.rawHomeProbability ?? null;
+        const rawAway = snapshot.modelInputs?.rawAwayProbability ?? null;
+        const calHome = snapshot.modelInputs?.pureHomeProbability ?? null;
+        const calAway = snapshot.modelInputs?.pureAwayProbability ?? null;
+        const dispHome = snapshot.modelInputs?.displayHomeProbability ?? null;
+        const dispAway = snapshot.modelInputs?.displayAwayProbability ?? null;
+        const pickSide =
+          Number(calHome) >= Number(calAway) ? 'home' : 'away';
+        const pickTeamId =
+          pickSide === 'home'
+            ? String(prediction.home?.id ?? '')
+            : String(prediction.away?.id ?? '');
+        const pickProb = pickSide === 'home' ? calHome : calAway;
+
+        this.recordModelPrediction({
+          runId: prediction.runId,
+          gamePk: prediction.gamePk,
+          dateYmd,
+          modelId: snapshot.versions.modelId || HEURISTIC_V1_MODEL_ID,
+          modelImplVersion: snapshot.versions.modelImplVersion || HEURISTIC_V1_IMPL_VERSION,
+          featureSchemaVersion: snapshot.versions.featureSchemaVersion || CONTROL_FEATURE_SCHEMA_VERSION,
+          calibrationArtifactHash: snapshot.calibrationArtifact?.artifactHash || null,
+          calibrationStatus: snapshot.calibrationArtifact?.integrityStatus || null,
+          rawHomeProbability: rawHome,
+          rawAwayProbability: rawAway,
+          calibratedHomeProbability: calHome,
+          calibratedAwayProbability: calAway,
+          finalHomeProbability: calHome,
+          finalAwayProbability: calAway,
+          displayHomeProbability: dispHome,
+          displayAwayProbability: dispAway,
+          pickSide,
+          pickTeamId,
+          pickProbability: pickProb,
+          status: prediction.betDecision?.status || 'NO_BET',
+          reasonCodes: prediction.betDecision?.reasonCodes
+            ? JSON.stringify(prediction.betDecision.reasonCodes)
+            : null,
+          asOfUtc: snapshot.asOfUtc,
+          firstPitchUtc: snapshot.firstPitchUtc,
+          informationState: infoState,
+          promotionEligible,
+          promotionReasons,
+          modelVersion: snapshot.versions.modelVersion,
+          featureVersion: snapshot.versions.featureVersion,
+          calibrationVersion: snapshot.versions.calibrationVersion,
+          snapshotHash: snapshot.snapshotHash,
+          payload: {
+            modelBreakdown: prediction.modelBreakdown || null,
+            featureAvailability: snapshot.featureAvailability || null,
+            featureFallbacks: snapshot.featureFallbacks || null
+          }
+        });
+      } catch {
+        // all-game history must never break the live save path
+      }
+
+      // Shadow challengers: when MLB_SHADOW_MODE is explicitly true and a
+      // compatible artifact exists, score each challenger on the SAME frozen
+      // run and append its row. NEVER mutates the control row, winner,
+      // winProbability, VALUE, stake, Telegram, dashboard, CLV, or memory.
+      // A missing artifact or unavailable feature vector is a no-op with a
+      // clear reason — never a default probability. Best-effort: shadow scoring
+      // must never break the live save path.
+      try {
+        const shadowResults = scoreShadowChallengers({
+          ...prediction,
+          coreInputs: snapshot.coreInputs || prediction.coreInputs || null,
+          runId: prediction.runId,
+          snapshotHash: snapshot.snapshotHash,
+          asOfUtc: snapshot.asOfUtc,
+          startTime: snapshot.firstPitchUtc || prediction.startTime || null,
+          informationState: this.computeInformationState({
+            asOfUtc: snapshot.asOfUtc,
+            firstPitchUtc: snapshot.firstPitchUtc,
+            lineupsConfirmed: prediction.bothLineupsConfirmed ?? false
+          }),
+          dateYmd,
+          featureVersion: snapshot.versions.featureVersion
+        });
+        for (const r of shadowResults) {
+          if (r.entry) {
+            this.recordModelPrediction(r.entry);
+          }
+        }
+      } catch {
+        // shadow challenger scoring must never break the live save path
       }
 
       return snapshot;
@@ -2338,6 +2575,25 @@ export class Storage {
         const openReal = this.getOpenBet(gamePk, 'moneyline');
         const openShadow = this.getOpenShadowBet(gamePk, 'moneyline');
 
+        // P1 all-game outcome: record for EVERY captured final game,
+        // independent of betting. game_outcomes is the all-game label table.
+        // Idempotent (INSERT OR IGNORE). Also marks the closing quote proxy.
+        try {
+          this.recordGameOutcome({
+            gamePk,
+            dateYmd: prediction?.dateYmd || existing?.dateYmd || null,
+            home: { id: prediction?.home?.id ?? existing?.home?.id },
+            away: { id: prediction?.away?.id ?? existing?.away?.id },
+            homeScore: result?.homeScore ?? result?.home?.score,
+            awayScore: result?.awayScore ?? result?.away?.score,
+            status: result?.status || null,
+            firstInningAnyRun: result?.firstInningAnyRun ?? null
+          });
+          this.markClosingQuotePairs(gamePk);
+        } catch {
+          // all-game outcome recording must never block bet settlement
+        }
+
         if (!existing?.postGameProcessed) {
           // Only record memory/outcome when there is a real bet to settle
           // OR the pick was explicitly processed. Shadow-only settlement is
@@ -2649,5 +2905,454 @@ export class Storage {
 
   clearChatHistory(chatId) {
     this.db.prepare('DELETE FROM chat_history WHERE chat_id = ?').run(String(chatId));
+  }
+
+  // -------------------------------------------------------------------------
+  // P1: immutable all-game model prediction history, market quote pairs,
+  // all-game outcomes, and dataset folds. Additive to legacy picks/bet_ledger.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record one immutable per-model prediction row against a frozen run.
+   * Append-only: INSERT OR IGNORE on (run_id, model_id). The control
+   * heuristic_v1 calls this for EVERY eligible scheduled game (including NO
+   * BET); shadow challengers call it when shadow mode is on.
+   *
+   * Returns the prediction_id (null if the row already existed and was
+   * ignored — a refresh must not mint a new identity for unchanged state).
+   */
+  recordModelPrediction(entry) {
+    const {
+      runId,
+      gamePk,
+      dateYmd,
+      modelId,
+      modelImplVersion,
+      featureSchemaVersion,
+      modelArtifactHash = null,
+      calibrationArtifactHash = null,
+      calibrationStatus = null,
+      rawHomeProbability = null,
+      rawAwayProbability = null,
+      calibratedHomeProbability = null,
+      calibratedAwayProbability = null,
+      finalHomeProbability = null,
+      finalAwayProbability = null,
+      residualLogit = null,
+      displayHomeProbability = null,
+      displayAwayProbability = null,
+      pickSide = null,
+      pickTeamId = null,
+      pickProbability = null,
+      status = null,
+      reasonCodes = null,
+      pairedQuotePairId = null,
+      marketNoVigHomeProb = null,
+      marketNoVigAwayProb = null,
+      asOfUtc = null,
+      firstPitchUtc = null,
+      informationState = null,
+      promotionEligible = false,
+      promotionReasons = null,
+      modelVersion = null,
+      featureVersion = null,
+      calibrationVersion = null,
+      snapshotHash = null,
+      payload = null
+    } = entry || {};
+
+    if (!runId || !gamePk || !modelId) {
+      throw new Error('recordModelPrediction requires runId, gamePk, modelId');
+    }
+
+    const predictionId = `mp-${runId}-${modelId}`;
+    const now = new Date().toISOString();
+
+    let info;
+    try {
+      info = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO model_predictions (
+            prediction_id, run_id, game_pk, date_ymd, model_id, model_impl_version,
+            feature_schema_version, model_artifact_hash, calibration_artifact_hash,
+            calibration_status, raw_home_probability, raw_away_probability,
+            calibrated_home_probability, calibrated_away_probability,
+            final_home_probability, final_away_probability, residual_logit,
+            display_home_probability, display_away_probability, pick_side,
+            pick_team_id, pick_probability, status, reason_codes,
+            paired_quote_pair_id, market_no_vig_home_prob, market_no_vig_away_prob,
+            as_of_utc, first_pitch_utc, information_state, promotion_eligible,
+            promotion_reasons, model_version, feature_version, calibration_version,
+            snapshot_hash, payload, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          predictionId,
+          String(runId),
+          String(gamePk),
+          dateYmd || null,
+          modelId,
+          modelImplVersion || null,
+          featureSchemaVersion || null,
+          modelArtifactHash,
+          calibrationArtifactHash,
+          calibrationStatus,
+          nullableFiniteNumber(rawHomeProbability),
+          nullableFiniteNumber(rawAwayProbability),
+          nullableFiniteNumber(calibratedHomeProbability),
+          nullableFiniteNumber(calibratedAwayProbability),
+          nullableFiniteNumber(finalHomeProbability),
+          nullableFiniteNumber(finalAwayProbability),
+          nullableFiniteNumber(residualLogit),
+          nullableFiniteNumber(displayHomeProbability),
+          nullableFiniteNumber(displayAwayProbability),
+          pickSide,
+          pickTeamId != null ? String(pickTeamId) : null,
+          nullableFiniteNumber(pickProbability),
+          status,
+          reasonCodes,
+          pairedQuotePairId,
+          nullableFiniteNumber(marketNoVigHomeProb),
+          nullableFiniteNumber(marketNoVigAwayProb),
+          asOfUtc,
+          firstPitchUtc,
+          informationState,
+          boolToInt(promotionEligible),
+          promotionReasons,
+          modelVersion,
+          featureVersion,
+          calibrationVersion,
+          snapshotHash,
+          toJson(payload),
+          now
+        );
+    } catch (error) {
+      // table may be absent on partial fixtures — never break savePredictions
+      return null;
+    }
+
+    // INSERT OR IGNORE: changes === 0 means a duplicate (run_id, model_id)
+    // already existed and was ignored — a refresh must not mint a new identity.
+    return info && info.changes > 0 ? predictionId : null;
+  }
+
+  /**
+   * Record a complete same-book home/away quote pair from raw Odds API markets.
+   * Deterministic quote_pair_id from (game, bookmaker, market, odds, fetched_at).
+   * Enforces first-pitch guard: post-pitch pairs are retained but marked
+   * ineligible — they cannot update opening/closing promotion data.
+   */
+  recordMarketQuotePair(entry) {
+    const {
+      gamePk,
+      sourceEventId = null,
+      bookmaker = null,
+      market = 'moneyline',
+      homeOdds = null,
+      awayOdds = null,
+      homeImpliedProb = null,
+      awayImpliedProb = null,
+      overround = null,
+      homeNoVigProb = null,
+      awayNoVigProb = null,
+      bookmakerLastUpdate = null,
+      fetchedAtUtc = null,
+      observedAtUtc = null,
+      firstPitchUtc = null,
+      asOfUtc = null,
+      payload = null
+    } = entry || {};
+
+    if (!gamePk || homeOdds == null || awayOdds == null) return null;
+
+    const now = new Date().toISOString();
+    const quotePairId = `qp-${gamePk}-${bookmaker || 'unknown'}-${market}-${homeOdds}-${awayOdds}-${fetchedAtUtc || now}`;
+    const pairHash = createHash('sha256').update(quotePairId).digest('hex').slice(0, 16);
+
+    // Temporal guard: post-pitch is ineligible diagnostic only.
+    let isEligible = 1;
+    let ineligibilityReason = null;
+    if (firstPitchUtc && fetchedAtUtc && Date.parse(fetchedAtUtc) >= Date.parse(firstPitchUtc)) {
+      isEligible = 0;
+      ineligibilityReason = 'post_first_pitch';
+    }
+
+    try {
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO market_quote_pairs (
+            quote_pair_id, game_pk, source_event_id, bookmaker, market,
+            home_odds, away_odds, home_implied_prob, away_implied_prob, overround,
+            home_no_vig_prob, away_no_vig_prob, bookmaker_last_update, fetched_at_utc,
+            observed_at_utc, first_pitch_utc, as_of_utc, is_opening, is_closing,
+            is_eligible, ineligibility_reason, payload, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          pairHash,
+          String(gamePk),
+          sourceEventId,
+          bookmaker,
+          market,
+          nullableFiniteNumber(homeOdds),
+          nullableFiniteNumber(awayOdds),
+          nullableFiniteNumber(homeImpliedProb),
+          nullableFiniteNumber(awayImpliedProb),
+          nullableFiniteNumber(overround),
+          nullableFiniteNumber(homeNoVigProb),
+          nullableFiniteNumber(awayNoVigProb),
+          bookmakerLastUpdate,
+          fetchedAtUtc,
+          observedAtUtc || fetchedAtUtc,
+          firstPitchUtc,
+          asOfUtc,
+          0,
+          0,
+          isEligible,
+          ineligibilityReason,
+          toJson(payload),
+          now
+        );
+    } catch {
+      return null;
+    }
+
+    // First eligible pair per (game, bookmaker, market) is the opening.
+    try {
+      this.db
+        .prepare(
+          `UPDATE market_quote_pairs
+           SET is_opening = 1
+           WHERE quote_pair_id = ?
+             AND is_eligible = 1
+             AND NOT EXISTS (
+               SELECT 1 FROM market_quote_pairs earlier
+               WHERE earlier.game_pk = ?
+                 AND (earlier.bookmaker = ? OR (earlier.bookmaker IS NULL AND ? IS NULL))
+                 AND earlier.market = ?
+                 AND earlier.is_eligible = 1
+                 AND earlier.created_at < ?
+             )`
+        )
+        .run(pairHash, String(gamePk), bookmaker, bookmaker, market, now);
+    } catch {
+      // non-fatal
+    }
+
+    return pairHash;
+  }
+
+  /**
+   * Mark the latest eligible pair before first pitch as the closing proxy.
+   * Never a mutable post-start overwrite. Called during postgame processing.
+   */
+  markClosingQuotePairs(gamePk) {
+    try {
+      this.db
+        .prepare(
+          `UPDATE market_quote_pairs
+           SET is_closing = 1
+           WHERE quote_pair_id IN (
+             SELECT quote_pair_id FROM market_quote_pairs qp
+             WHERE qp.game_pk = ?
+               AND qp.is_eligible = 1
+               AND qp.first_pitch_utc IS NOT NULL
+               AND qp.quote_pair_id = (
+                 SELECT qp2.quote_pair_id FROM market_quote_pairs qp2
+                 WHERE qp2.game_pk = qp.game_pk
+                   AND qp2.bookmaker = qp.bookmaker
+                   AND qp2.market = qp.market
+                   AND qp2.is_eligible = 1
+                   AND qp2.first_pitch_utc = qp.first_pitch_utc
+                 ORDER BY qp2.fetched_at_utc DESC
+                 LIMIT 1
+               )
+           )`
+        )
+        .run(String(gamePk));
+    } catch {
+      // non-fatal
+    }
+  }
+
+  /**
+   * Find the best eligible quote pair available by a run's as_of_utc — the
+   * market a prediction actually saw. Prefer earliest no-vig pair from a
+   * high-coverage bookmaker. Never attaches a later quote to an earlier run.
+   */
+  pairQuoteToRun(gamePk, market, asOfUtc) {
+    if (!gamePk || !asOfUtc) return null;
+    try {
+      return (
+        this.db
+          .prepare(
+            `SELECT quote_pair_id, bookmaker, home_odds, away_odds,
+                    home_no_vig_prob, away_no_vig_prob, overround,
+                    fetched_at_utc, is_opening, is_closing
+             FROM market_quote_pairs
+             WHERE game_pk = ? AND market = ? AND is_eligible = 1
+               AND fetched_at_utc <= ?
+             ORDER BY fetched_at_utc DESC
+             LIMIT 1`
+          )
+          .get(String(gamePk), market, asOfUtc) || null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Idempotent all-game outcome recording. Called for every captured final
+   * game, independent of betting. game_outcomes becomes the all-game label
+   * table. INSERT OR IGNORE keeps it idempotent.
+   */
+  recordGameOutcome(game) {
+    if (!game?.gamePk) return null;
+    const homeScore = nullableFiniteNumber(game.homeScore ?? game.home?.score, null);
+    const awayScore = nullableFiniteNumber(game.awayScore ?? game.away?.score, null);
+    if (homeScore == null || awayScore == null) return null;
+
+    const homeTeamId = game.home?.id ?? game.homeTeamId ?? null;
+    const awayTeamId = game.away?.id ?? game.awayTeamId ?? null;
+    let winnerTeamId = null;
+    let loserTeamId = null;
+    if (homeScore > awayScore) {
+      winnerTeamId = homeTeamId;
+      loserTeamId = awayTeamId;
+    } else if (awayScore > homeScore) {
+      winnerTeamId = awayTeamId;
+      loserTeamId = homeTeamId;
+    }
+    const now = new Date().toISOString();
+    const outcomeId = `outcome-${game.gamePk}`;
+
+    try {
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO game_outcomes (
+            game_pk, date_ymd, home_team_id, away_team_id, home_score, away_score,
+            winner_team_id, loser_team_id, first_inning_any_run, payload, recorded_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          String(game.gamePk),
+          game.dateYmd || game.officialDate || null,
+          homeTeamId != null ? String(homeTeamId) : null,
+          awayTeamId != null ? String(awayTeamId) : null,
+          homeScore,
+          awayScore,
+          winnerTeamId != null ? String(winnerTeamId) : null,
+          loserTeamId != null ? String(loserTeamId) : null,
+          game.firstInningAnyRun != null ? boolToInt(game.firstInningAnyRun) : null,
+          toJson({
+            homeScore,
+            awayScore,
+            winnerTeamId,
+            loserTeamId,
+            status: game.status?.detailedState || null
+          }),
+          now
+        );
+    } catch {
+      return null;
+    }
+    return outcomeId;
+  }
+
+  /**
+   * Persist a chronological fold manifest. Same-date games stay together.
+   * Last contiguous block is the untouched holdout.
+   */
+  saveDatasetFolds(folds, datasetHash, manifestVersion = 'walk-forward-v1') {
+    if (!Array.isArray(folds)) return;
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      for (const fold of folds) {
+        const foldId = `fold-${fold.fold_index}-${fold.fold_type}`;
+        this.db
+          .prepare(
+            `INSERT OR REPLACE INTO model_dataset_folds (
+              fold_id, fold_index, fold_type, start_date, end_date,
+              train_start_date, train_end_date, game_count, date_count,
+              dataset_hash, manifest_version, payload, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            foldId,
+            fold.fold_index,
+            fold.fold_type,
+            fold.start_date,
+            fold.end_date,
+            fold.train_start_date || null,
+            fold.train_end_date || null,
+            fold.game_count ?? null,
+            fold.date_count ?? null,
+            datasetHash,
+            manifestVersion,
+            toJson(fold),
+            now
+          );
+      }
+    });
+    try {
+      tx();
+    } catch {
+      // non-fatal on partial fixtures
+    }
+  }
+
+  getDatasetFolds() {
+    try {
+      return this.db
+        .prepare('SELECT * FROM model_dataset_folds ORDER BY fold_index, fold_type')
+        .all();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * List model predictions with optional filters for dataset building.
+   */
+  listModelPredictions({ modelId = null, dateYmd = null, promotionEligibleOnly = false } = {}) {
+    try {
+      const clauses = [];
+      const params = [];
+      if (modelId) {
+        clauses.push('model_id = ?');
+        params.push(modelId);
+      }
+      if (dateYmd) {
+        clauses.push('date_ymd = ?');
+        params.push(String(dateYmd));
+      }
+      if (promotionEligibleOnly) {
+        clauses.push('promotion_eligible = 1');
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+      return this.db
+        .prepare(`SELECT * FROM model_predictions ${where} ORDER BY date_ymd, game_pk`)
+        .all(...params);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Build the normalized feature vector from a frozen snapshot's coreInputs
+   * and return the flattened form for dataset export.
+   */
+  flattenFeatureVectorFromSnapshot(coreInputs) {
+    const vector = buildFeatureVector(coreInputs);
+    return flattenFeatureVector(vector);
+  }
+
+  /**
+   * Compute the information state for a run from its timestamps + lineup
+   * confirmation. Pure metadata — never changes control scoring.
+   */
+  computeInformationState({ asOfUtc, firstPitchUtc, lineupsConfirmed }) {
+    return classifyInformationState({ asOfUtc, firstPitchUtc, lineupsConfirmed });
   }
 }

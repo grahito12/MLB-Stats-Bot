@@ -104,3 +104,56 @@ test('missing prediction timestamp yields missing_as_of issue', () => {
   assert.equal(report.ok, false);
   assert.ok(report.issues.some((i) => i.code === TEMPORAL_CODES.MISSING_AS_OF));
 });
+
+test('nested news provenance is verified when availability is explicit', () => {
+  const snapshot = {
+    predictionTimestampUtc: PRED_TS,
+    firstPitchUtc: '2026-05-10T23:00:00Z',
+    features: {
+      news: {
+        article123: {
+          value: { title: 'Lineup update' },
+          source: 'mlb',
+          observedAt: '2026-05-10T16:00:00Z',
+          availableAt: '2026-05-10T16:01:00Z',
+          fetchedAt: '2026-05-10T16:02:00Z'
+        }
+      }
+    }
+  };
+  const report = validateTemporalSnapshot(snapshot);
+  assert.equal(report.featureCount, 1);
+  assert.equal(report.promotionEligible, true);
+});
+
+test('nested future news makes promotion ineligible and strict mode throws', () => {
+  const snapshot = {
+    predictionTimestampUtc: PRED_TS,
+    features: {
+      news: {
+        article123: {
+          value: { title: 'Future headline' },
+          source: 'espn',
+          availableAt: '2026-05-10T20:00:00Z'
+        }
+      }
+    }
+  };
+  const report = validateTemporalSnapshot(snapshot);
+  assert.equal(report.promotionEligible, false);
+  assert.ok(report.errors.some((error) => error.code === TEMPORAL_CODES.FUTURE_FEATURE));
+  assert.throws(
+    () => validateTemporalSnapshot(snapshot, null, { strict: true }),
+    (error) => error instanceof TemporalLeakageError && error.code === TEMPORAL_CODES.FUTURE_FEATURE
+  );
+});
+
+test('news with publication time but no availability remains historical_unverified', () => {
+  const result = classifyFeatureProvenance(
+    { value: { title: 'Reported update' }, source: 'yahoo', observedAt: '2026-05-10T16:00:00Z' },
+    PRED_TS
+  );
+  assert.equal(result.code, TEMPORAL_CODES.UNVERIFIED_HISTORICAL);
+  assert.equal(result.liveSafe, true);
+  assert.equal(result.promotionSafe, false);
+});

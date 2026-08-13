@@ -507,10 +507,19 @@ def retrain() -> dict[str, Any]:
 
 
 def retrain_from_sqlite(sqlite_path: str | Path | None = None) -> dict[str, Any]:
-    """Rebuild per-market calibration maps from live bet ledger probabilities."""
+    """Rebuild per-market calibration maps from SELECTED-VALUE bet ledger.
+
+    This is the explicitly named ``selected_value`` diagnostic path. It trains on
+    ``bet_ledger`` rows, which are VALUE-selected picks — NOT all-game history.
+    Selection bias means this population is not the calibration truth for the
+    control model. P6 retargets the PRIMARY training path to all-game
+    ``model_predictions`` + ``game_outcomes`` (see ``retrain_all_game``); this
+    function is retained as an explicitly named diagnostic only and must NEVER be
+    used as the default calibration truth.
+    """
     source = Path(sqlite_path) if sqlite_path is not None else _SQLITE_PATH
     if not source.exists():
-        return {"status": "error", "reason": f"SQLite database not found: {source}", "source": "SQLite bet_ledger"}
+        return {"status": "error", "reason": f"SQLite database not found: {source}", "source": "SQLite bet_ledger (selected_value diagnostic)"}
 
     rows_by_market: dict[str, list[tuple[float, float]]] = {m: [] for m in _MARKETS}
     try:
@@ -537,16 +546,105 @@ def retrain_from_sqlite(sqlite_path: str | Path | None = None) -> dict[str, Any]
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        return {"status": "error", "reason": f"SQLite read failed: {exc}", "source": "SQLite bet_ledger"}
+        return {"status": "error", "reason": f"SQLite read failed: {exc}", "source": "SQLite bet_ledger (selected_value diagnostic)"}
 
     maps, per_market = _fit_all_markets(rows_by_market, market_params=_SQLITE_MARKET_PARAMS)
-    return _write_calibration_maps(maps, per_market, source="SQLite bet_ledger")
+    result = _write_calibration_maps(maps, per_market, source="SQLite bet_ledger (selected_value diagnostic)")
+    result["diagnostic"] = "selected_value"
+    result["selection_bias_warning"] = (
+        "bet_ledger is VALUE-selected history, not all-game. Use only as a "
+        "diagnostic; the primary calibration truth is retrain_all_game()."
+    )
+    return result
+
+
+def retrain_all_game(sqlite_path: str | Path | None = None) -> dict[str, Any]:
+    """P6 PRIMARY calibration training path: all-game model_predictions + outcomes.
+
+    Reads the migration-006 ``model_predictions`` table (one row per eligible
+    scheduled game, including NO BET) joined to ``game_outcomes``. This is the
+    unselected all-game population — the correct calibration truth for the
+    control model, free of the VALUE-selection bias in ``bet_ledger``.
+
+    Uses the control ``raw_home_probability`` (uncalibrated) vs the home-win
+    outcome. Falls back to ``calibrated_home_probability`` only when raw is null.
+    Promotion-eligible rows only (as_of_utc < first_pitch_utc).
+
+    If migration-006 tables are absent (production DB not migrated), returns an
+    explicit error rather than fabricating data or silently falling back to the
+    selected-value path.
+    """
+    source = Path(sqlite_path) if sqlite_path is not None else _SQLITE_PATH
+    if not source.exists():
+        return {"status": "error", "reason": f"SQLite database not found: {source}", "source": "SQLite model_predictions (all-game)"}
+
+    rows_by_market: dict[str, list[tuple[float, float]]] = {m: [] for m in _MARKETS}
+    try:
+        conn = sqlite3.connect(str(source))
+        conn.row_factory = sqlite3.Row
+        try:
+            # Verify migration-006 tables exist; never fabricate if absent.
+            try:
+                conn.execute("SELECT 1 FROM model_predictions LIMIT 1")
+                conn.execute("SELECT 1 FROM game_outcomes LIMIT 1")
+            except sqlite3.Error as exc:
+                return {
+                    "status": "error",
+                    "reason": f"migration_006_tables_absent ({exc}); all-game path cannot run without model_predictions/game_outcomes",
+                    "source": "SQLite model_predictions (all-game)",
+                }
+            rows = conn.execute(
+                """
+                SELECT mp.raw_home_probability, mp.calibrated_home_probability,
+                       mp.pick_side, mp.promotion_eligible,
+                       go.winner_team_id, go.home_team_id
+                FROM model_predictions mp
+                JOIN game_outcomes go ON go.game_pk = mp.game_pk
+                WHERE mp.model_id = 'heuristic_v1'
+                  AND mp.promotion_eligible = 1
+                """
+            )
+            for row in rows:
+                prob = _normalize_probability(row["raw_home_probability"])
+                if prob is None:
+                    prob = _normalize_probability(row["calibrated_home_probability"])
+                if prob is None:
+                    continue
+                winner = row["winner_team_id"]
+                home = row["home_team_id"]
+                if winner is None or home is None:
+                    continue
+                outcome = 1.0 if str(winner) == str(home) else 0.0
+                rows_by_market["moneyline"].append((prob, outcome))
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return {"status": "error", "reason": f"SQLite read failed: {exc}", "source": "SQLite model_predictions (all-game)"}
+
+    maps, per_market = _fit_all_markets(rows_by_market, market_params=_SQLITE_MARKET_PARAMS)
+    result = _write_calibration_maps(maps, per_market, source="SQLite model_predictions (all-game, P6 primary)")
+    result["population"] = "all_game"
+    return result
 
 
 def retrain_default() -> dict[str, Any]:
-    """Prefer live SQLite calibration, falling back to CSV outcomes."""
+    """P6 default calibration retrain.
+
+    PRIMARY path is now all-game ``model_predictions`` + ``game_outcomes``
+    (``retrain_all_game``). If migration-006 tables are absent, fall back to CSV
+    ``prediction_outcomes`` (``retrain``) rather than the selected-value
+    ``bet_ledger`` path — selected-value is a diagnostic, not default truth.
+
+    The selected-value ``bet_ledger`` path (``retrain_from_sqlite``) is retained
+    but must be invoked explicitly; it is never the default.
+    """
     if _SQLITE_PATH.exists():
-        return retrain_from_sqlite(_SQLITE_PATH)
+        result = retrain_all_game(_SQLITE_PATH)
+        if result.get("status") == "error" and "migration_006_tables_absent" in result.get("reason", ""):
+            # Production DB not migrated to 006 — fall back to CSV outcomes, NOT
+            # the selected-value ledger. Calibration stays selected-bias-free.
+            return retrain()
+        return result
     return retrain()
 
 
@@ -554,11 +652,19 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Probability calibrator")
-    parser.add_argument("--retrain", action="store_true", help="Rebuild calibration map")
+    parser.add_argument("--retrain", action="store_true", help="Rebuild calibration map (P6 default: all-game)")
+    parser.add_argument("--all-game", action="store_true", help="Force all-game model_predictions path")
+    parser.add_argument("--selected-value", action="store_true",
+                        help="Diagnostic only: bet_ledger selected-value path (biased)")
     args = parser.parse_args()
 
-    if args.retrain:
+    if args.all_game:
+        result = retrain_all_game()
+    elif args.selected_value:
+        result = retrain_from_sqlite()
+    elif args.retrain:
         result = retrain_default()
-        print(json.dumps(result, indent=2))
     else:
         parser.print_help()
+        raise SystemExit(0)
+    print(json.dumps(result, indent=2))

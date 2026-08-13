@@ -21,7 +21,10 @@
  */
 
 import { predictGameMoneylineCore } from './core/prediction_core.js';
-import { calibratePercentWithArtifact } from './calibration.js';
+import {
+  calibratePercentWithArtifact,
+  verifyCalibrationArtifact
+} from './calibration.js';
 import { moneylineWeightMultiplier } from './evolutionControls.js';
 import {
   assertReplayParity,
@@ -29,6 +32,12 @@ import {
 } from './prediction_snapshot.js';
 import { parseSnapshot, readSnapshotFile, serializeSnapshot } from './prediction_serializer.js';
 import { hashPayload } from './prediction_snapshot.js';
+import { assertPregameEligible } from './temporal_contract.js';
+import {
+  CONTROL_FEATURE_SCHEMA_VERSION,
+  HEURISTIC_V1_IMPL_VERSION,
+  HEURISTIC_V1_MODEL_ID
+} from './core/model_ids.js';
 
 export const PROBABILITY_TOLERANCE = 1e-9;
 export const EDGE_TOLERANCE = 1e-9;
@@ -158,14 +167,136 @@ function replayProjection(snapshot) {
   };
 }
 
+function replayPromotionGate(snapshot, parity) {
+  const reasons = [];
+  const temporal = assertPregameEligible({
+    asOf: snapshot.asOfUtc || snapshot.predictionTimestampUtc,
+    firstPitch: snapshot.firstPitchUtc
+  });
+  if (!temporal.ok) reasons.push(temporal.reason);
+
+  const versions = snapshot.versions || {};
+  if (!versions.modelId) {
+    reasons.push('missing_model_id');
+  } else if (versions.modelId !== HEURISTIC_V1_MODEL_ID) {
+    reasons.push('incompatible_model_id');
+  }
+  const modelImplVersion = versions.modelImplVersion || versions.modelVersion;
+  if (!modelImplVersion) {
+    reasons.push('missing_model_impl_version');
+  } else if (modelImplVersion !== HEURISTIC_V1_IMPL_VERSION) {
+    reasons.push('incompatible_model_impl_version');
+  }
+  if (!versions.featureSchemaVersion) {
+    reasons.push('missing_feature_schema_version');
+  } else if (versions.featureSchemaVersion !== CONTROL_FEATURE_SCHEMA_VERSION) {
+    reasons.push('incompatible_feature_schema_version');
+  }
+
+  const calibration = snapshot.calibrationArtifact;
+  if (!calibration) {
+    reasons.push('missing_calibration_artifact');
+  } else {
+    const verification = verifyCalibrationArtifact(
+      calibration
+    );
+    reasons.push(...verification.reasons);
+    if (calibration.promotionSafe !== true) {
+      reasons.push(`calibration_${calibration.integrityStatus || 'not_promotion_safe'}`);
+    }
+    if (calibration.expectedModelId !== versions.modelId) {
+      reasons.push('calibration_expected_model_mismatch');
+    }
+    if (calibration.expectedModelImplVersion !== modelImplVersion) {
+      reasons.push('calibration_expected_model_impl_mismatch');
+    }
+    if (calibration.expectedFeatureSchemaVersion !== versions.featureSchemaVersion) {
+      reasons.push('calibration_expected_feature_schema_mismatch');
+    }
+    if (
+      calibration.modelId &&
+      calibration.modelId !== versions.modelId
+    ) {
+      reasons.push('calibration_model_mismatch');
+    }
+    if (
+      calibration.modelImplVersion &&
+      calibration.modelImplVersion !== modelImplVersion
+    ) {
+      reasons.push('calibration_model_impl_mismatch');
+    }
+    if (
+      calibration.featureSchemaVersion &&
+      calibration.featureSchemaVersion !== versions.featureSchemaVersion
+    ) {
+      reasons.push('calibration_feature_schema_mismatch');
+    }
+  }
+  if (snapshot.predictionQuality?.promotionEligible === false) {
+    reasons.push(...(snapshot.predictionQuality.reasons || ['prediction_quality_ineligible']));
+  }
+  if (!parity.ok) reasons.push('recompute_parity_failed');
+
+  return {
+    eligible: reasons.length === 0,
+    reasons: [...new Set(reasons)]
+  };
+}
+
+function snapshotIntegrity(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return {
+      ok: false,
+      reason: 'invalid_snapshot'
+    };
+  }
+  const { snapshotHash, ...body } = snapshot;
+  const expected = hashPayload(body);
+  if (!snapshotHash) {
+    return {
+      ok: false,
+      reason: 'missing_snapshot_hash',
+      expected,
+      actual: snapshotHash || null
+    };
+  }
+  if (snapshotHash !== expected) {
+    return {
+      ok: false,
+      reason: 'snapshot_hash_integrity_failure',
+      expected,
+      actual: snapshotHash
+    };
+  }
+  return { ok: true, expected, actual: snapshotHash };
+}
+
 function replayRecompute(snapshot) {
+  const integrity = snapshotIntegrity(snapshot);
   const recomputed = recomputeFromSnapshot(snapshot);
   const parity = compareRecomputeToStored(snapshot, recomputed);
+  const gatedParity = integrity.ok
+    ? parity
+    : {
+        ok: false,
+        mismatches: [
+          ...parity.mismatches,
+          {
+            key: 'snapshotHash',
+            stored: integrity.actual,
+            recomputed: integrity.expected,
+            reason: integrity.reason
+          }
+        ]
+      };
+  const promotionGate = replayPromotionGate(snapshot, gatedParity);
   return {
     mode: 'recompute',
-    promotionEligible: parity.ok,
+    promotionEligible: promotionGate.eligible,
+    promotionReasons: promotionGate.reasons,
     decision: recomputed,
-    parity,
+    parity: gatedParity,
+    integrity,
     snapshotHash: snapshot.snapshotHash
   };
 }

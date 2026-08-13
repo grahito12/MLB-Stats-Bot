@@ -81,7 +81,18 @@ export function buildPredictionSnapshot({
       openingOdds: prediction.openingOdds || null
     },
     modelInputs: {
-      // Display-rounded calibrated probabilities (what every surface shows).
+      // Named probability stages prevent display/market overwrite from being
+      // evaluated as pure control output.
+      rawAwayProbability:
+        prediction.away?.rawBaseballProbability ??
+        prediction.modelBreakdown?.rawAwayProbability ??
+        prediction.away?.winProbabilityRaw ??
+        null,
+      rawHomeProbability:
+        prediction.home?.rawBaseballProbability ??
+        prediction.modelBreakdown?.rawHomeProbability ??
+        prediction.home?.winProbabilityRaw ??
+        null,
       pureAwayProbability:
         prediction.away?.pureModelProbability ??
         prediction.modelBreakdown?.pureAwayProbability ??
@@ -90,9 +101,28 @@ export function buildPredictionSnapshot({
         prediction.home?.pureModelProbability ??
         prediction.modelBreakdown?.pureHomeProbability ??
         null,
-      // Unrounded raw (pre-calibration) stages — full precision from modelBreakdown.
-      rawAwayProbability: prediction.modelBreakdown?.rawAwayProbability ?? null,
-      rawHomeProbability: prediction.modelBreakdown?.rawHomeProbability ?? null,
+      marketInformedAwayProbability:
+        prediction.away?.marketInformedProbability ??
+        prediction.modelBreakdown?.marketInformedAwayProbability ??
+        null,
+      marketInformedHomeProbability:
+        prediction.home?.marketInformedProbability ??
+        prediction.modelBreakdown?.marketInformedHomeProbability ??
+        null,
+      displayAwayProbability:
+        prediction.away?.displayProbability ?? prediction.away?.winProbability ?? null,
+      displayHomeProbability:
+        prediction.home?.displayProbability ?? prediction.home?.winProbability ?? null,
+      valueAwayProbability:
+        prediction.away?.valueModelProbability ??
+        prediction.moneylineValueOptions?.find((option) => option.side === 'away')
+          ?.gradingProbability ??
+        null,
+      valueHomeProbability:
+        prediction.home?.valueModelProbability ??
+        prediction.moneylineValueOptions?.find((option) => option.side === 'home')
+          ?.gradingProbability ??
+        null,
       dampenedEdge: prediction.modelBreakdown?.dampenedEdge ?? null,
       rawEdge: prediction.modelBreakdown?.rawEdge ?? null,
       modelBreakdown: prediction.modelBreakdown || null
@@ -103,12 +133,21 @@ export function buildPredictionSnapshot({
       moneylineValueOptions: prediction.moneylineValueOptions || []
     },
     versions: {
+      modelId: versions.modelId || prediction.modelId || null,
       modelVersion: versions.modelVersion || prediction.modelVersion || null,
+      modelImplVersion:
+        versions.modelImplVersion || prediction.modelImplVersion || null,
       featureVersion: versions.featureVersion || prediction.featureVersion || null,
+      featureSchemaVersion:
+        versions.featureSchemaVersion || prediction.featureSchemaVersion || null,
       calibrationVersion:
         versions.calibrationVersion || prediction.calibrationVersion || null,
       betPolicyVersion: versions.betPolicyVersion || prediction.betPolicyVersion || null
     },
+    featureAvailability: prediction.featureAvailability || null,
+    featureFallbacks: prediction.featureFallbacks || null,
+    featureProvenance: prediction.featureProvenance || null,
+    predictionQuality: prediction.predictionQuality || null,
     // Frozen raw core inputs (plain JSON, Maps already serialized) + the exact
     // calibration artifact. When present, replay RECOMPUTES the prediction with
     // the pure core instead of only projecting stored decision fields.

@@ -56,6 +56,7 @@ Helpers: `src/temporal_contract.js`, `src/temporal_contract.py`, `src/data_fresh
 | Odds quotes | last eligible pre-first-pitch | Opening freeze partial; close capture must not overwrite post-start |
 | Weather | observation ≤ as_of | Live fetch; fixtures must be labeled sample |
 | Static sample CSVs | never "live fresh" | Label fixture/sample |
+| External news/articles | explicit availability ≤ decision cutoff; post-start excluded | live filter active; published-only records remain unverified |
 
 ## 3. Forbidden practices
 

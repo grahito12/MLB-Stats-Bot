@@ -185,3 +185,8 @@ Record the following with every published report:
 - Backtest command.
 - Environment variables that affect behavior, excluding secrets.
 - Active prompt/rule/weight versions from `data/evolution/`.
+
+## Related
+
+- `docs/CURRENT_MODEL_FORMULA.md` — exact core equations, coefficients, clamps, defaults
+- `docs/PREDICTION_ENGINE_AUDIT.md` — P0 correctness status, model identity, calibration integrity

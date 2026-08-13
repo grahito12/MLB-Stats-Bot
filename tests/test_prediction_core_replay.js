@@ -15,7 +15,11 @@ import {
 } from '../src/prediction_replay.js';
 import {
   calibratePercent,
-  freezeCalibrationArtifact
+  freezeCalibrationArtifact,
+  buildCalibrationArtifact,
+  computeCalibrationContentHash,
+  computeCalibrationArtifactHash,
+  validateCalibrationMapping
 } from '../src/calibration.js';
 import { loadEvolutionControls, moneylineWeightMultiplier } from '../src/evolutionControls.js';
 
@@ -91,6 +95,58 @@ function liveCore(bundle) {
   });
 }
 
+// A fully-bound, hash-consistent ACTIVE calibration artifact for replay
+// fixtures. The live on-disk map is legacy_unbound (no model bindings), so
+// promotion-eligible replay tests cannot reuse it. This synthetic artifact is
+// built through the same public builder the loader uses, then re-stamped with
+// the binding fields it would carry once trained with full provenance.
+function syntheticActiveArtifact() {
+  const frozen = freezeCalibrationArtifact('moneyline');
+  const validation = validateCalibrationMapping(frozen.mapping);
+  const base = {
+    market: 'moneyline',
+    mode: 'map',
+    applicationMode: 'map',
+    integrityStatus: 'active',
+    promotionSafe: true,
+    mapFound: true,
+    mapPresent: validation.valid,
+    mapPoints: validation.points,
+    mapValidation: { valid: validation.valid, reason: validation.reason },
+    mapping: validation.mapping,
+    shrinkFactor: frozen.shrinkFactor,
+    metaSuccess: true,
+    samples: 1044,
+    modelId: 'heuristic_v1',
+    modelImplVersion: 'moneyline-core-v1.0',
+    featureSchemaVersion: 'mlb-control-features-v1.0',
+    expectedModelId: 'heuristic_v1',
+    expectedModelImplVersion: 'moneyline-core-v1.0',
+    expectedFeatureSchemaVersion: 'mlb-control-features-v1.0',
+    population: 'mlb-regular-season-2026',
+    trainingCutoff: '2026-07-01',
+    validThrough: null,
+    method: 'isotonic',
+    datasetHash: 'dataset-test-0x1',
+    warnings: [],
+    source: 'calibration_maps.json'
+  };
+  const contentHash = computeCalibrationContentHash(base);
+  const expectedContentHash = contentHash;
+  const artifactHash = computeCalibrationArtifactHash({
+    ...base,
+    contentHash
+  });
+  return {
+    ...base,
+    contentHash,
+    expectedContentHash,
+    artifactHash,
+    calibrationVersion: `cal-moneyline-${artifactHash}`,
+    hashSchema: 'calibration-artifact-v1'
+  };
+}
+
 function buildSnapshot(bundle, live) {
   const coreInputs = buildCoreInputsSnapshot(bundle);
   const prediction = {
@@ -118,9 +174,14 @@ function buildSnapshot(bundle, live) {
     dateYmd: '2026-07-21',
     asOfUtc: '2026-07-21T12:00:00.000Z',
     predictionTimestampUtc: '2026-07-21T12:00:00.000Z',
-    versions: { modelVersion: 'moneyline-core-v1.0' },
+    versions: {
+      modelId: 'heuristic_v1',
+      modelVersion: 'moneyline-core-v1.0',
+      modelImplVersion: 'moneyline-core-v1.0',
+      featureSchemaVersion: 'mlb-control-features-v1.0'
+    },
     coreInputs,
-    calibrationArtifact: freezeCalibrationArtifact('moneyline')
+    calibrationArtifact: syntheticActiveArtifact()
   });
 }
 
@@ -128,6 +189,14 @@ function makeSnapshot() {
   const bundle = baseBundle();
   const live = liveCore(bundle);
   return { bundle, live, snapshot: buildSnapshot(bundle, live) };
+}
+
+function rehash(snapshot) {
+  const { snapshotHash: _oldHash, ...body } = snapshot;
+  return {
+    ...body,
+    snapshotHash: hashPayload(body)
+  };
 }
 
 test('exact snapshot replay is deterministic and parity-true (recompute mode)', () => {
@@ -190,6 +259,61 @@ test('changing only irrelevant metadata does not change the prediction', () => {
   const changed = recomputeFromSnapshot(mutated);
   assert.equal(changed.rawHomeProbability, base.rawHomeProbability);
   assert.equal(changed.pureHomeProbability, base.pureHomeProbability);
+});
+
+test('recompute parity cannot promote a post-pitch snapshot', () => {
+  const { snapshot } = makeSnapshot();
+  const late = JSON.parse(JSON.stringify(snapshot));
+  late.asOfUtc = late.firstPitchUtc;
+  late.predictionTimestampUtc = late.firstPitchUtc;
+  const result = replaySnapshot(rehash(late));
+
+  assert.equal(result.parity.ok, true);
+  assert.equal(result.promotionEligible, false);
+  assert.ok(result.promotionReasons.includes('as_of_at_first_pitch'));
+});
+
+test('recompute parity cannot promote an unbound calibration artifact', () => {
+  const { snapshot } = makeSnapshot();
+  const unbound = JSON.parse(JSON.stringify(snapshot));
+  unbound.calibrationArtifact.integrityStatus = 'legacy_unbound';
+  unbound.calibrationArtifact.promotionSafe = false;
+  const result = replaySnapshot(rehash(unbound));
+
+  assert.equal(result.parity.ok, true);
+  assert.equal(result.promotionEligible, false);
+  assert.ok(result.promotionReasons.includes('calibration_legacy_unbound'));
+});
+
+test('recompute parity requires complete model identity', () => {
+  const { snapshot } = makeSnapshot();
+  const missing = JSON.parse(JSON.stringify(snapshot));
+  missing.versions.modelId = null;
+  missing.versions.modelVersion = null;
+  missing.versions.modelImplVersion = null;
+  missing.versions.featureSchemaVersion = null;
+  const result = replaySnapshot(rehash(missing));
+
+  assert.equal(result.parity.ok, true);
+  assert.equal(result.promotionEligible, false);
+  assert.ok(result.promotionReasons.includes('missing_model_id'));
+  assert.ok(result.promotionReasons.includes('missing_model_impl_version'));
+  assert.ok(result.promotionReasons.includes('missing_feature_schema_version'));
+});
+
+test('recompute parity rejects calibration identity inconsistent with snapshot', () => {
+  const { snapshot } = makeSnapshot();
+  const mismatched = JSON.parse(JSON.stringify(snapshot));
+  mismatched.calibrationArtifact.expectedModelId = 'learned_v2_logistic';
+  mismatched.calibrationArtifact.expectedModelImplVersion = 'learned-v2-test';
+  mismatched.calibrationArtifact.expectedFeatureSchemaVersion = 'learned-features-test';
+  const result = replaySnapshot(rehash(mismatched));
+
+  assert.equal(result.parity.ok, true);
+  assert.equal(result.promotionEligible, false);
+  assert.ok(result.promotionReasons.includes('calibration_expected_model_mismatch'));
+  assert.ok(result.promotionReasons.includes('calibration_expected_model_impl_mismatch'));
+  assert.ok(result.promotionReasons.includes('calibration_expected_feature_schema_mismatch'));
 });
 
 test('projection-only snapshot (no coreInputs) is not promotion-eligible', () => {

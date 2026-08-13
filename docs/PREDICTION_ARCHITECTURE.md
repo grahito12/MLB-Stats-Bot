@@ -89,6 +89,8 @@ production-replay snapshots.
 
 ## Related
 
+- `docs/CURRENT_MODEL_FORMULA.md` — exact core equations, coefficients, clamps
+- `docs/PREDICTION_ENGINE_AUDIT.md` — P0 correctness status, identity, calibration integrity
 - `docs/TECHNICAL_AUDIT.md`
 - `docs/DATA_LEAKAGE_POLICY.md`
 - `docs/BETTING_LEDGER.md`

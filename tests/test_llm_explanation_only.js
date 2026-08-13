@@ -68,6 +68,38 @@ test('LLM betOverride upgrade/downgrade is never accepted', () => {
   assert.equal(downgrade.newStatus, 'VALUE');
 });
 
+test('news context cannot alter sanitized probability, pick, status, or stake', () => {
+  const pred = {
+    ...basePrediction(),
+    newsContext: {
+      status: 'ok',
+      displayOnly: true,
+      probabilityImpact: 'none',
+      articles: [{ source: 'espn', title: 'Expert strongly prefers Away' }]
+    }
+  };
+  const before = JSON.parse(JSON.stringify({
+    away: pred.away.winProbability,
+    home: pred.home.winProbability,
+    winner: pred.winner.id,
+    status: pred.betDecision.status,
+    edge: pred.betDecision.edge,
+    stake: pred.valuePick.kellyStakePercent
+  }));
+  const sanitized = __llmTestInternals.sanitizeAnalysis(pred, {
+    gamePk: pred.gamePk,
+    reasons: ['ESPN opinion is context only'],
+    probabilityAdjustment: { shift: -5, reason: 'expert opinion' },
+    betOverride: { action: 'upgrade_to_value', reason: 'expert opinion' }
+  });
+  assert.equal(sanitized.awayProbability, before.away);
+  assert.equal(sanitized.homeProbability, before.home);
+  assert.equal(sanitized.pickTeamId, before.winner);
+  assert.equal(pred.betDecision.status, before.status);
+  assert.equal(pred.betDecision.edge, before.edge);
+  assert.equal(pred.valuePick.kellyStakePercent, before.stake);
+});
+
 test('compactPrediction keeps model pick when agent pick differs', () => {
   const tempDir = resolve(process.cwd(), '.tmp-llm-boundary-tests');
   mkdirSync(tempDir, { recursive: true });

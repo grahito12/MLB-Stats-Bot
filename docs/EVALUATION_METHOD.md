@@ -65,6 +65,8 @@ is unavailable it is `null`, while `units_per_bet` is reported separately.
 
 ## 7. Related docs
 
+- `docs/CURRENT_MODEL_FORMULA.md` — exact core equations
+- `docs/PREDICTION_ENGINE_AUDIT.md` — calibration/evaluation selection bias, P0–P7 status
 - `docs/TECHNICAL_AUDIT.md`
 - `docs/DATA_LEAKAGE_POLICY.md`
 - `docs/MODEL_CARD.md`

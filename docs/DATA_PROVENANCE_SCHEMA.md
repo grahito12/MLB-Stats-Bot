@@ -81,6 +81,7 @@ machine-readable error. The validator never silently passes a future feature.
 | Closing lines | last pre-first-pitch quote; never post-start overwrite | enforced for CLV |
 | Model memory / evolution | only promoted artifacts | proposal-only (no auto-promote) |
 | Calibration data | chronological out-of-fold only | governed (see CALIBRATION_GOVERNANCE) |
+| External news/articles | `availableAt <= predictionTimestamp`; published time alone is unverified | enforced in `src/news.js`; unverified context is not promotion-safe |
 
 ## 7. Historical lineup policy
 
@@ -95,7 +96,11 @@ promotionEligible  = false
 
 Do **not** infer a pregame lineup timestamp from the final boxscore.
 
-## 8. Validation command
+## 8. External news policy
+
+External article records use `publishedAt` as `observedAt`. Publication time alone does not prove when feed became available, so RSS/Atom records without explicit provider `availableAt` are `historical_unverified`: safe for live display, not model promotion. Only provider-stamped `availableAt <= predictionTimestampUtc` can be promotion-safe. News remains outside deterministic `coreInputs`.
+
+## 9. Validation command
 
 ```javascript
 import { validateTemporalSnapshot } from '../src/data/temporal_validator.js';
@@ -103,7 +108,7 @@ const report = validateTemporalSnapshot(snapshot, null, { strict: false });
 // report.promotionEligible === false  -> exclude from model promotion
 ```
 
-## 9. Related
+## 10. Related
 
 - `docs/DATA_LEAKAGE_POLICY.md`
 - `docs/REPLAY_ARCHITECTURE.md`

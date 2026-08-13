@@ -539,6 +539,7 @@ export async function attachCurrentOdds(games = []) {
   if (!activeGames.length) return result;
 
   const events = await fetchOdds();
+  const fetchedAtIso = new Date(oddsCache.dataFetchedAt || oddsCache.fetchedAt || Date.now()).toISOString();
   for (const game of activeGames) {
     const event = findEventForGame(game, events);
     if (!event) continue;
@@ -550,9 +551,30 @@ export async function attachCurrentOdds(games = []) {
       homeMoneylineBook: snapshot.homeMoneylineBook,
       awayMoneyline: snapshot.awayMoneyline,
       homeMoneyline: snapshot.homeMoneyline,
-      oddsFetchedAt: new Date(oddsCache.dataFetchedAt || oddsCache.fetchedAt || Date.now()).toISOString()
+      oddsFetchedAt: fetchedAtIso
     };
     result.matchedGames += 1;
+
+    // P1 market tape: capture complete same-book home/away quote pairs for the
+    // all-game research dataset. Best-effort — never breaks odds attachment.
+    try {
+      const pairs = extractSameBookQuotePairs(game, event);
+      if (pairs.length && state.storage?.recordMarketQuotePair) {
+        const firstPitch = game.startTime || game.firstPitchUtc || null;
+        const asOf = fetchedAtIso;
+        for (const pair of pairs) {
+          state.storage.recordMarketQuotePair({
+            ...pair,
+            fetchedAtUtc: fetchedAtIso,
+            observedAtUtc: pair.bookmakerLastUpdate || fetchedAtIso,
+            firstPitchUtc: firstPitch,
+            asOfUtc: asOf
+          });
+        }
+      }
+    } catch {
+      // market tape is research-only; never block the live path
+    }
   }
 
   return result;
@@ -574,6 +596,60 @@ export function americanImpliedProbability(value) {
   const odds = Number(value);
   if (!Number.isFinite(odds) || odds === 0) return null;
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
+}
+
+/**
+ * Extract complete same-book home/away moneyline quote pairs from raw Odds API
+ * bookmaker markets. Each pair has BOTH prices from the SAME bookmaker — this
+ * is the market tape for no-vig consensus, separate from best-price line
+ * shopping (which serves betting). Returns [] when no complete pairs exist.
+ *
+ * Pairs include home/away odds, implied probabilities, overround, no-vig
+ * probabilities, and bookmaker last_update when supplied. The caller (storage)
+ * stamps fetched_at_utc and enforces first-pitch guards.
+ */
+export function extractSameBookQuotePairs(game, event) {
+  if (!event?.bookmakers || !game?.home?.name || !game?.away?.name) return [];
+  const homeName = game.home.name;
+  const awayName = game.away.name;
+  const pairs = [];
+
+  for (const bookmaker of event.bookmakers) {
+    const h2h = (bookmaker.markets || []).find((m) => m.key === 'h2h' || m.key === 'moneyline');
+    if (!h2h?.outcomes?.length) continue;
+    const homeOutcome = h2h.outcomes.find((o) => namesMatch(o.name, homeName));
+    const awayOutcome = h2h.outcomes.find((o) => namesMatch(o.name, awayName));
+    if (!homeOutcome || !awayOutcome) continue;
+
+    const homeOdds = toFiniteNumber(homeOutcome.price);
+    const awayOdds = toFiniteNumber(awayOutcome.price);
+    if (homeOdds === null || awayOdds === null) continue;
+
+    const homeImplied = americanImpliedProbability(homeOdds);
+    const awayImplied = americanImpliedProbability(awayOdds);
+    if (homeImplied == null || awayImplied == null) continue;
+
+    const overround = homeImplied + awayImplied;
+    const homeNoVig = overround > 0 ? homeImplied / overround : null;
+    const awayNoVig = overround > 0 ? awayImplied / overround : null;
+
+    pairs.push({
+      gamePk: String(game.gamePk || ''),
+      sourceEventId: event.id || null,
+      bookmaker: bookmaker.key || bookmaker.title || 'unknown',
+      market: 'moneyline',
+      homeOdds,
+      awayOdds,
+      homeImpliedProb: homeImplied,
+      awayImpliedProb: awayImplied,
+      overround,
+      homeNoVigProb: homeNoVig,
+      awayNoVigProb: awayNoVig,
+      bookmakerLastUpdate: h2h.last_update || bookmaker.last_update || null
+    });
+  }
+
+  return pairs;
 }
 
 function movementArrow(movement) {

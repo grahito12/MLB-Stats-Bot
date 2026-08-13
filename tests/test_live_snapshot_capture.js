@@ -22,6 +22,8 @@ function prediction() {
     gamePk: 7001,
     dateYmd: '2026-07-27',
     startTime: '2026-07-27T23:00:00Z',
+    predictionTimestampUtc: '2026-07-27T17:00:00Z',
+    asOfUtc: '2026-07-27T17:00:00Z',
     status: 'Scheduled',
     away,
     home,
@@ -55,6 +57,20 @@ test('savePredictions captures immutable snapshot hash and prediction run', () =
   const { storage, tempDir } = freshStorage();
   try {
     const pred = prediction();
+    pred.featureSnapshot = {
+      news: {
+        article1: {
+          value: { title: 'Verified pregame update' },
+          source: 'mlb',
+          observedAt: '2026-07-27T16:00:00Z',
+          availableAt: '2026-07-27T16:01:00Z',
+          fetchedAt: '2026-07-27T16:02:00Z',
+          inferred: false,
+          historicalValidity: 'verified'
+        }
+      }
+    };
+    pred.newsContext = { status: 'ok', displayOnly: true, probabilityImpact: 'none', articles: [] };
     pred.coreInputs = {
       game: {
         gamePk: 7001,
@@ -85,7 +101,8 @@ test('savePredictions captures immutable snapshot hash and prediction run', () =
     const saved = storage.getPrediction(7001);
     assert.ok(saved.snapshotHash);
     assert.match(saved.calibrationVersion, /^cal-moneyline-/);
-    assert.equal(saved.asOfUtc, saved.predictionTimestampUtc);
+    assert.equal(saved.asOfUtc, '2026-07-27T17:00:00Z');
+    assert.equal(saved.predictionTimestampUtc, '2026-07-27T17:00:00Z');
 
     const run = storage.db
       .prepare('SELECT * FROM prediction_runs WHERE game_pk = ?')
@@ -104,6 +121,7 @@ test('savePredictions captures immutable snapshot hash and prediction run', () =
     const payload = JSON.parse(feature.payload);
     assert.equal(payload.snapshotHash, saved.snapshotHash);
     assert.equal(payload.coreInputs.game.gamePk, 7001);
+    assert.equal(payload.features.news.article1.value.title, 'Verified pregame update');
     assert.equal(payload.calibrationArtifact.market, 'moneyline');
     assert.ok(Array.isArray(payload.calibrationArtifact.mapping));
 
@@ -114,6 +132,45 @@ test('savePredictions captures immutable snapshot hash and prediction run', () =
       )
       .get('7001');
     assert.equal(files.c, 1);
+  } finally {
+    storage.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('compact prediction persists pure, display, market, and VALUE probability stages', () => {
+  const { storage, tempDir } = freshStorage();
+  try {
+    const pred = prediction();
+    pred.modelId = 'heuristic_v1';
+    pred.modelImplVersion = 'moneyline-core-v1.0';
+    pred.featureSchemaVersion = 'mlb-control-features-v1.0';
+    pred.away.rawBaseballProbability = 46.2;
+    pred.home.rawBaseballProbability = 53.8;
+    pred.away.pureModelProbability = 47;
+    pred.home.pureModelProbability = 53;
+    pred.away.marketInformedProbability = 52;
+    pred.home.marketInformedProbability = 48;
+    pred.away.displayProbability = 52;
+    pred.home.displayProbability = 48;
+    pred.away.valueModelProbability = 47.5;
+    pred.home.valueModelProbability = 52.5;
+    pred.winner = pred.away;
+
+    storage.savePredictions('2026-07-27', [pred]);
+    const saved = storage.getPrediction(7001);
+
+    assert.equal(saved.away.rawBaseballProbability, 46.2);
+    assert.equal(saved.away.pureModelProbability, 47);
+    assert.equal(saved.away.marketInformedProbability, 52);
+    assert.equal(saved.away.displayProbability, 52);
+    assert.equal(saved.away.valueModelProbability, 47.5);
+    assert.equal(saved.home.displayProbability, 48);
+    assert.equal(saved.pick.id, 202);
+    assert.equal(saved.pick.winProbability, 53);
+    assert.equal(saved.modelId, 'heuristic_v1');
+    assert.equal(saved.modelImplVersion, 'moneyline-core-v1.0');
+    assert.equal(saved.featureSchemaVersion, 'mlb-control-features-v1.0');
   } finally {
     storage.close();
     rmSync(tempDir, { recursive: true, force: true });

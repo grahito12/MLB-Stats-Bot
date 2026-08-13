@@ -2,7 +2,7 @@
  * UTC point-in-time temporal contract helpers.
  *
  * Statuses: fresh | stale | missing | invalid_future | invalid
- * Pregame eligibility: observed/effective <= as_of <= first_pitch
+ * Pregame eligibility: observed/effective <= as_of < first_pitch
  */
 
 const DEFAULT_CLOCK_SKEW_MS = 2 * 60 * 1000; // 2 minutes
@@ -101,8 +101,13 @@ export function assertPregameEligible({
   }
 
   const firstPitchMs = parseUtcMs(firstPitch);
-  if (firstPitchMs != null && asOfMs - firstPitchMs > clockSkewMs) {
-    return { ok: false, reason: 'as_of_after_first_pitch' };
+  // Producer time is strict: a row at or after first pitch is never pregame.
+  // Clock skew remains allowed only when comparing source timestamps to as_of.
+  if (firstPitchMs != null && asOfMs >= firstPitchMs) {
+    return {
+      ok: false,
+      reason: asOfMs === firstPitchMs ? 'as_of_at_first_pitch' : 'as_of_after_first_pitch'
+    };
   }
 
   for (const [label, value] of [
