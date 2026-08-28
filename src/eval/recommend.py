@@ -64,8 +64,17 @@ def recommend(
             reasons + [f"holdout_rows_{n}_below_minimum_{MIN_HOLDOUT_ROWS}"],
         )
 
+    # Fail-closed gates: UNKNOWN (None) evidence blocks promotion exactly like
+    # FAIL does. PASS requires the affirmative value; None means the check was
+    # never run, which is never promotion-grade evidence. UNKNOWN keeps the
+    # challenger in shadow; explicit FAIL yields KEEP V1.
+    unknown_evidence = False
+    replay_ok = replay_verified is True
     if replay_verified is False:
         reasons.append("replay_not_verified")
+    elif replay_verified is None:
+        reasons.append("replay_verification_unknown")
+        unknown_evidence = True
 
     # Brier + log loss improvement.
     ctrl_brier = control_holdout.get("brier")
@@ -106,17 +115,33 @@ def recommend(
             f"margin={ACCURACY_NONINFERIORITY_MARGIN})"
         )
 
-    # Fold stability + subgroup.
+    # Fold stability + subgroup: fail-closed. None (never evaluated) blocks.
+    fold_ok = fold_stability_ok is True
     if fold_stability_ok is False:
         reasons.append("fold_instability")
+    elif fold_stability_ok is None:
+        reasons.append("fold_stability_unknown")
+        unknown_evidence = True
+
+    subgroup_ok = subgroup_failure is False
     if subgroup_failure is True:
         reasons.append("severe_subgroup_failure")
+    elif subgroup_failure is None:
+        reasons.append("subgroup_result_unknown")
+        unknown_evidence = True
 
-    # Market residual requires incremental improvement over no-vig market.
+    # Market residual requires incremental improvement over the no-vig market.
+    # Fail-closed: a market-derived challenger with ABSENT market comparison
+    # evidence (missing market_holdout or missing brier on either side) is not
+    # promotable — absence of evidence is UNKNOWN, not PASS.
     market_incremental = True
-    if challenger_model_id == "market_residual_v2" and market_holdout is not None:
-        mkt_brier = market_holdout.get("brier")
-        if mkt_brier is not None and chal_brier is not None:
+    if challenger_model_id == "market_residual_v2":
+        mkt_brier = market_holdout.get("brier") if market_holdout is not None else None
+        if mkt_brier is None or chal_brier is None:
+            market_incremental = False
+            reasons.append("market_comparison_evidence_missing")
+            unknown_evidence = True
+        else:
             market_incremental = (mkt_brier - chal_brier) >= MIN_BRIER_IMPROVEMENT
             if not market_incremental:
                 reasons.append(
@@ -128,12 +153,18 @@ def recommend(
         and logloss_improved
         and accuracy_ok
         and market_incremental
-        and fold_stability_ok is not False
-        and subgroup_failure is not True
-        and replay_verified is not False
+        and fold_ok
+        and subgroup_ok
+        and replay_ok
     )
 
     if not all_conditions:
+        # UNKNOWN evidence with an otherwise-healthy challenger keeps it in
+        # shadow (evidence must be gathered), never PROMOTE and never a false
+        # "V1 beat it" verdict when the comparison itself is complete.
+        metrics_ok = brier_improved and logloss_improved and accuracy_ok
+        if unknown_evidence and metrics_ok:
+            return _result("RUN V2 IN SHADOW", reasons)
         return _result("KEEP V1", reasons)
 
     if not human_approved:

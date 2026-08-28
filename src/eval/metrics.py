@@ -15,10 +15,26 @@ from src.calibration import brier_score as _py_brier, log_loss as _py_log_loss
 
 
 def _to_arrays(probs: Iterable[float], outcomes: Iterable[int]):
-    p = np.asarray([float(x) for x in probs if x is not None], dtype=float)
-    y = np.asarray([int(x) for x in outcomes if x is not None], dtype=int)
-    n = min(len(p), len(y))
-    return p[:n], y[:n]
+    """Pair rows FIRST, then drop pairs with a missing side.
+
+    Filtering probs and outcomes independently destroys row alignment
+    (a None in one list shifts every later value against the other list).
+    Length mismatch is a caller bug — fail loudly instead of silently
+    truncating one array against unrelated rows of the other.
+    """
+    p_list = list(probs)
+    y_list = list(outcomes)
+    if len(p_list) != len(y_list):
+        raise ValueError(
+            f"probs and outcomes must be the same length (got {len(p_list)} vs {len(y_list)}); "
+            "rows are paired by position"
+        )
+    pairs = [(p, y) for p, y in zip(p_list, y_list) if p is not None and y is not None]
+    if not pairs:
+        return np.asarray([], dtype=float), np.asarray([], dtype=int)
+    p = np.asarray([float(p) for p, _ in pairs], dtype=float)
+    y = np.asarray([int(y) for _, y in pairs], dtype=int)
+    return p, y
 
 
 def accuracy(probs: Iterable[float], outcomes: Iterable[int]) -> float | None:

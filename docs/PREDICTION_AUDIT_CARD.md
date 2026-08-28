@@ -44,10 +44,13 @@ probability, why did it decide BET/NO BET, and what happened afterwards.
 - **No fabrication.** A field that was not persisted for a prediction renders
   as "Not recorded". Missing snapshot files are reported as missing.
 - **Temporal safety.** "Market at prediction" only ever uses a quote pair with
-  `fetched_at_utc <= as_of_utc`. A paired quote that violates this (or a
-  missing pairing) falls back to the nearest pre-`as_of` eligible quote, and
-  the card labels the fallback. Closing quotes are shown separately and used
-  for evaluation/CLV only.
+  PROVEN temporal provenance: `fetched_at_utc` and `as_of_utc` both known AND
+  `fetched_at_utc <= as_of_utc`. A NULL quote timestamp or NULL `as_of` means
+  provenance is unknown and is never valid prediction-time evidence. A paired
+  quote that violates the rule (or a missing pairing) falls back to the
+  nearest pre-`as_of` eligible quote, and the card labels the fallback; when
+  no provenance-proven quote exists, the card shows the safe "not recorded"
+  state. Closing quotes are shown separately and used for evaluation/CLV only.
 - **Probability stages stay distinct.** Raw model, calibrated (final), display,
   and market no-vig probabilities are separate fields, never blended.
 - **Exact contributions.** Feature contributions for `heuristic_v1` are the

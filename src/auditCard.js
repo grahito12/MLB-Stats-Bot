@@ -178,7 +178,10 @@ function marketContext(db, gamePk, pairedQuotePairId, asOf) {
     const row = db
       .prepare('SELECT * FROM market_quote_pairs WHERE quote_pair_id = ?')
       .get(pairedQuotePairId);
-    if (row && (!asOf || !row.fetched_at_utc || row.fetched_at_utc <= asOf)) {
+    // Proven temporal provenance only: both timestamps known AND
+    // fetched_at <= as_of. NULL on either side = provenance unknown,
+    // never valid prediction-time evidence.
+    if (row && asOf && row.fetched_at_utc && row.fetched_at_utc <= asOf) {
       atPrediction = row;
       source = 'paired';
     }

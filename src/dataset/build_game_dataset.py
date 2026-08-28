@@ -169,6 +169,12 @@ def select_main_cohort_row(
     quote = quotes_by_game.get(game_pk, {}).get(run.get("as_of_utc"))
 
     reason = quarantine_row(run, outcome)
+    # Eligibility invariant: a fallback row selected because NO promotion-
+    # eligible run exists must never enter the clean dataset, even when it is
+    # temporally valid and has an outcome. Quarantine it with a stable reason
+    # so it stays auditable instead of leaking or vanishing.
+    if reason is None and not run.get("promotion_eligible"):
+        reason = "not_promotion_eligible"
     home_team_id = str(run.get("home_team_id") or outcome.get("home_team_id") or "") if outcome else None
     away_team_id = str(run.get("away_team_id") or outcome.get("away_team_id") or "") if outcome else None
 
@@ -341,9 +347,13 @@ def build_game_dataset(
             row.market_no_vig_away_prob = q.get("away_no_vig_prob")
             row.paired_quote_pair_id = q.get("quote_pair_id")
 
-        if reason is None and row.home_won is not None:
+        # Clean invariant: valid temporal row AND valid outcome AND
+        # promotion eligibility AND no quarantine reason.
+        if reason is None and row.home_won is not None and row.promotion_eligible:
             clean.append(row)
         else:
+            if reason is None and not row.promotion_eligible:
+                reason = "not_promotion_eligible"
             row.quarantine_reason = reason or (row.quarantine_reason or "unknown")
             quarantined.append(row)
 

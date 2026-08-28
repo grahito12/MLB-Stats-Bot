@@ -298,11 +298,15 @@ def _market_context(
             "SELECT * FROM market_quote_pairs WHERE quote_pair_id = ?",
             (paired_quote_pair_id,),
         ).fetchone()
-        # Paired quote is trusted only if it respects the temporal rule.
-        if row is not None and (
-            as_of is None
-            or row["fetched_at_utc"] is None
-            or row["fetched_at_utc"] <= as_of
+        # Paired quote is trusted only with PROVEN temporal provenance:
+        # both timestamps known AND fetched_at <= as_of. A NULL fetched_at or
+        # NULL as_of means provenance is unknown — never valid prediction-time
+        # evidence.
+        if (
+            row is not None
+            and as_of is not None
+            and row["fetched_at_utc"] is not None
+            and row["fetched_at_utc"] <= as_of
         ):
             at_prediction = _quote_to_dict(row, as_of)
             source = "paired"

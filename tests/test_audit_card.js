@@ -188,6 +188,55 @@ test('audit card rejects post-as_of paired quote and falls back to pre-as_of', (
   storage.close?.();
 });
 
+test('null quote timestamp is never valid prediction-time evidence', () => {
+  const { storage } = freshStorage();
+  seed(storage);
+  // Pair the prediction to a quote whose fetched_at_utc is NULL: temporal
+  // provenance unknown — must NOT count as "market at prediction".
+  storage.db
+    .prepare(
+      `INSERT INTO market_quote_pairs (
+         quote_pair_id, game_pk, bookmaker, market, home_odds, away_odds,
+         home_no_vig_prob, away_no_vig_prob, fetched_at_utc, first_pitch_utc,
+         is_opening, is_closing, is_eligible, created_at
+       ) VALUES (?, ?, 'betmgm', 'moneyline', -115, 105, 0.52, 0.48, NULL, ?, 0, 0, 1, ?)`
+    )
+    .run('qp-null-ts', '900001', '2026-08-20T23:00:00Z', '2026-08-20T12:00:30.000Z');
+  storage.db
+    .prepare('UPDATE model_predictions SET paired_quote_pair_id = ? WHERE prediction_id = ?')
+    .run('qp-null-ts', 'mp-run-t1-heuristic_v1');
+
+  const mp = findAuditRow(storage.db, 'mp-run-t1-heuristic_v1');
+  const card = assembleAuditCard(storage.db, mp);
+  // Falls back to the provenance-proven pre-as_of quote, never the NULL one.
+  assert.equal(card.market.atPrediction.quote_pair_id, 'qp-pre');
+  assert.equal(card.market.source, 'nearest_pre_as_of');
+  storage.close?.();
+});
+
+test('null as_of claims no temporal validity for the paired quote', () => {
+  const { storage } = freshStorage();
+  seed(storage);
+  // Point the prediction at the legitimate pre-game quote, but erase as_of:
+  // without a prediction timestamp, temporal validity cannot be claimed.
+  storage.db
+    .prepare(
+      "UPDATE model_predictions SET paired_quote_pair_id = 'qp-pre', as_of_utc = NULL WHERE prediction_id = ?"
+    )
+    .run('mp-run-t1-heuristic_v1');
+
+  const mp = findAuditRow(storage.db, 'mp-run-t1-heuristic_v1');
+  const card = assembleAuditCard(storage.db, mp);
+  assert.equal(card.market.atPrediction, null);
+  assert.equal(card.market.source, null);
+  // Closing stays separate and available for evaluation only.
+  assert.equal(card.market.closing.quote_pair_id, 'qp-post');
+  // Rendering must expose the safe "not recorded" state, not fabricate.
+  const text = formatAuditCard(card);
+  assert.ok(text.includes('market saat prediksi: tidak ada quote <= as-of'));
+  storage.close?.();
+});
+
 test('formatAuditCard renders all sections without fabricating missing data', () => {
   const { storage } = freshStorage();
   seed(storage);
