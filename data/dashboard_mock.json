@@ -33,12 +33,6 @@
           "current_odds": "-125",
           "confidence": "Medium"
         },
-        "yrfi": {
-          "pick": "YES",
-          "probability": 55,
-          "confidence": "Medium",
-          "edge": 2.1
-        },
         "predicted_winner": "Los Angeles Dodgers",
         "predicted_winner_probability": 58.7,
         "data_quality": {
@@ -53,8 +47,13 @@
           "market_movement": "Moved heavily",
           "missing_fields": [],
           "stale_fields": [],
-          "confidence_adjustments": ["Lineup projected: confidence capped at Medium"],
-          "issues": ["Lineup is projected, not confirmed", "Market moved toward Dodgers"]
+          "confidence_adjustments": [
+            "Lineup projected: confidence capped at Medium"
+          ],
+          "issues": [
+            "Lineup is projected, not confirmed",
+            "Market moved toward Dodgers"
+          ]
         },
         "main_factors": [
           "Strong Dodgers offense profile",
@@ -97,12 +96,6 @@
           "current_odds": "-109",
           "confidence": "Low"
         },
-        "yrfi": {
-          "pick": "NO",
-          "probability": 62,
-          "confidence": "Low",
-          "edge": 0.5
-        },
         "predicted_winner": "Houston Astros",
         "predicted_winner_probability": 50.9,
         "data_quality": {
@@ -115,10 +108,18 @@
           "park_factor": "Available",
           "injury_news": "Missing",
           "market_movement": "Stable",
-          "missing_fields": ["lineup", "injury/news context"],
+          "missing_fields": [
+            "lineup",
+            "injury/news context"
+          ],
           "stale_fields": [],
-          "confidence_adjustments": ["Data quality below 60: no bet"],
-          "issues": ["Lineup missing", "Model edge below threshold"]
+          "confidence_adjustments": [
+            "Data quality below 60: no bet"
+          ],
+          "issues": [
+            "Lineup missing",
+            "Model edge below threshold"
+          ]
         },
         "main_factors": [
           "Both starters project close to league average",
@@ -158,12 +159,6 @@
           "edge": 5.4,
           "current_odds": "-110",
           "confidence": "High"
-        },
-        "yrfi": {
-          "pick": "NO",
-          "probability": 68,
-          "confidence": "Medium",
-          "edge": 3.0
         },
         "predicted_winner": "Atlanta Braves",
         "predicted_winner_probability": 57.8,
@@ -240,14 +235,44 @@
       "clv_hit_rate": 56.1
     },
     "by_market": [
-      {"market": "moneyline", "bets": 34, "win_rate": 55.9, "roi": 4.1},
-      {"market": "yrfi", "bets": 28, "win_rate": 53.6, "roi": 6.4}
+      {
+        "market": "moneyline",
+        "bets": 34,
+        "win_rate": 55.9,
+        "roi": 4.1
+      },
+      {
+        "market": "yrfi",
+        "bets": 28,
+        "win_rate": 53.6,
+        "roi": 6.4
+      }
     ],
     "calibration": [
-      {"bucket": "50-55%", "predictions": 44, "expected": 52.5, "actual": 51.1},
-      {"bucket": "55-60%", "predictions": 39, "expected": 57.5, "actual": 56.4},
-      {"bucket": "60-65%", "predictions": 27, "expected": 62.5, "actual": 63.0},
-      {"bucket": "65%+", "predictions": 18, "expected": 68.0, "actual": 66.7}
+      {
+        "bucket": "50-55%",
+        "predictions": 44,
+        "expected": 52.5,
+        "actual": 51.1
+      },
+      {
+        "bucket": "55-60%",
+        "predictions": 39,
+        "expected": 57.5,
+        "actual": 56.4
+      },
+      {
+        "bucket": "60-65%",
+        "predictions": 27,
+        "expected": 62.5,
+        "actual": 63.0
+      },
+      {
+        "bucket": "65%+",
+        "predictions": 18,
+        "expected": 68.0,
+        "actual": 66.7
+      }
     ]
   },
   "backtest": {
@@ -263,14 +288,42 @@
       "no_bet_count": 18
     },
     "no_bet_reasons": [
-      {"reason": "Model edge below minimum threshold", "count": 7},
-      {"reason": "Lineup not confirmed and confidence is low", "count": 5},
-      {"reason": "Data quality score below 60", "count": 4},
-      {"reason": "YRFI edge below threshold", "count": 2}
+      {
+        "reason": "Model edge below minimum threshold",
+        "count": 7
+      },
+      {
+        "reason": "Lineup not confirmed and confidence is low",
+        "count": 5
+      },
+      {
+        "reason": "Data quality score below 60",
+        "count": 4
+      },
+      {
+        "reason": "YRFI edge below threshold",
+        "count": 2
+      }
     ],
     "rows": [
-      {"date": "2026-04-20", "matchup": "Cubs @ Padres", "market": "yrfi", "lean": "NO", "result": "Win", "edge": 4.2, "profit_loss": 0.91},
-      {"date": "2026-04-21", "matchup": "Yankees @ Rangers", "market": "moneyline", "lean": "Yankees", "result": "Win", "edge": 5.9, "profit_loss": 0.74}
+      {
+        "date": "2026-04-20",
+        "matchup": "Cubs @ Padres",
+        "market": "yrfi",
+        "lean": "NO",
+        "result": "Win",
+        "edge": 4.2,
+        "profit_loss": 0.91
+      },
+      {
+        "date": "2026-04-21",
+        "matchup": "Yankees @ Rangers",
+        "market": "moneyline",
+        "lean": "Yankees",
+        "result": "Win",
+        "edge": 5.9,
+        "profit_loss": 0.74
+      }
     ]
   }
 }

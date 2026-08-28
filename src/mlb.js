@@ -52,7 +52,7 @@ const STRONG_VALUE_EDGE_THRESHOLD = 4.0;
 // Floor stays at 52% so VALUE can land in the better-calibrated band.
 // Historical VALUE WR still lags (~49%) — selection gates + real-form signals
 // must carry the lift, not a higher conviction floor.
-const MIN_VALUE_PROBABILITY = 52.0;
+const MIN_VALUE_PROBABILITY = 50.0;
 // Team quality gate: team must have >= this season win% to qualify for VALUE.
 // Picks on teams with .520+ WR: 70.2% historical accuracy.
 // Picks on sub-.500 teams: 35.2% accuracy. Market prices them correctly.

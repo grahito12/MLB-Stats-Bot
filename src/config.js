@@ -84,8 +84,9 @@ export function loadConfig() {
     postGameAlerts: boolFromEnv(process.env.POST_GAME_ALERTS, true),
     postGamePollMinutes: intFromEnv(process.env.POST_GAME_POLL_MINUTES, 5),
     modelMemory: boolFromEnv(process.env.MODEL_MEMORY, true),
-    // Phase 2 (2026-08): raised 0.04 → 0.05. Selection-only; does not change model probs.
-    minimumMoneylineEdge: numberFromEnv(process.env.MINIMUM_MONEYLINE_EDGE, 0.05),
+    // Lowered 0.05 → 0.02 (Aug 18): 251/254 picks were NO BET, gate was too tight.
+    // Edge analysis shows kelly 1-2% picks win 63.9% — lowering floor captures these.
+    minimumMoneylineEdge: numberFromEnv(process.env.MINIMUM_MONEYLINE_EDGE, 0.02),
     moneylineOddsMaxAgeMinutes: numberFromEnv(process.env.MONEYLINE_ODDS_MAX_AGE_MINUTES, 10),
     // Rolling avg CLV gate for new VALUE bets (ledger selection quality).
     clvGate: {

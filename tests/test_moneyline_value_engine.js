@@ -314,6 +314,10 @@ test('stale moneyline odds downgrade otherwise valid value bet', () => {
 });
 
 test('moneyline value gate requires configured 5 percent edge', () => {
+  // Pin the gate: default floor dropped to 0.02 (Aug 18), this test covers the
+  // configured-threshold path, so force the 5% floor via env override.
+  const previousEdge = process.env.MINIMUM_MONEYLINE_EDGE;
+  process.env.MINIMUM_MONEYLINE_EDGE = '0.05';
   const game = sampleGame({
     away: {
       id: 1,
@@ -338,12 +342,17 @@ test('moneyline value gate requires configured 5 percent edge', () => {
     }
   });
 
-  applyMoneylineValueMarket(game);
+  try {
+    applyMoneylineValueMarket(game);
 
-  assert.equal(game.valuePick.teamName, 'Thin Favorite');
-  assert.equal(game.valuePick.edge, 3.4);
-  assert.equal(game.betDecision.status, 'NO BET');
-  assert.ok(game.betDecision.reasons.some((reason) => /< 5\.0%/.test(reason)));
+    assert.equal(game.valuePick.teamName, 'Thin Favorite');
+    assert.equal(game.valuePick.edge, 3.4);
+    assert.equal(game.betDecision.status, 'NO BET');
+    assert.ok(game.betDecision.reasons.some((reason) => /< 5\.0%/.test(reason)));
+  } finally {
+    if (previousEdge === undefined) delete process.env.MINIMUM_MONEYLINE_EDGE;
+    else process.env.MINIMUM_MONEYLINE_EDGE = previousEdge;
+  }
 });
 
 test('record dominated favorite is downgraded to no bet even with positive value', () => {

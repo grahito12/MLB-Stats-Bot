@@ -47,9 +47,20 @@
       "order": 50,
       "action": "NO_BET",
       "handler": "awayUnderdog",
-      "params": { "max_odds": 115 },
+      "params": { "max_odds": 130 },
       "message": "away underdog +{odds} exceeds +{max} limit",
-      "notes": "option.side === 'away' && Number(option.odds) > max_odds."
+      "notes": "option.side === 'away' && Number(option.odds) > max_odds. Raised +115 → +130 (Aug 18): away picks win 53.8%, only slightly below home 56.9%."
+    },
+    {
+      "id": "js.away_weak_conviction",
+      "engines": ["js"],
+      "tier": 1,
+      "order": 55,
+      "action": "NO_BET",
+      "handler": "awayWeakConviction",
+      "params": { "min_probability": 56, "strong_edge": 5.0 },
+      "message": "away pick conviction {prob}% < {floor}% (home bias: away picks underperform)",
+      "notes": "option.side === 'away' && option.modelProbability < min_probability && option.edge < strong_edge. Added Aug 18: edge analysis shows bad days correlate with more away picks at low probability. Away picks <56% prob drag winrate."
     },
     {
       "id": "js.market_agreement",
@@ -81,9 +92,9 @@
       "order": 70,
       "action": "NO_BET",
       "handler": "convictionFloor",
-      "params": { "min_probability": 52 },
+      "params": { "min_probability": 50 },
       "message": "model conviction {prob}% < {floor}% floor",
-      "notes": "option.modelProbability < min_probability. prob = modelProbability.toFixed(1); floor renders as String(min_probability) == '52' to match template-literal ${MIN_VALUE_PROBABILITY}."
+      "notes": "option.modelProbability < min_probability. Lowered 52→50 (Aug 18): edge analysis shows 50-53% prob picks still win ~55%. Combined with edge floor 2% and away weak conviction filter."
     },
     {
       "id": "js.disagreement_away",
@@ -151,9 +162,9 @@
       "order": 110,
       "action": "NO_BET",
       "handler": "thinMatchup",
-      "params": { "max_matchup_edge": 0.08, "strong_edge": 4.0 },
+      "params": { "max_matchup_edge": 0.06, "strong_edge": 4.0 },
       "message": "matchup edge game ini masih tipis",
-      "notes": "abs(matchupEdge) < max_matchup_edge && option.edge < strong_edge (hardcoded STRONG_VALUE_EDGE_THRESHOLD, NOT the configurable edge floor)."
+      "notes": "abs(matchupEdge) < max_matchup_edge && option.edge < strong_edge. Tightened 0.08 → 0.06 (Aug 18): filter more thin-edge games."
     },
     {
       "id": "js.factor_agreement",

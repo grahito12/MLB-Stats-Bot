@@ -37,7 +37,7 @@ test('config defaults moneyline edge, odds max age, and python executable safely
     process.env.MONEYLINE_ODDS_MAX_AGE_MINUTES = '';
     process.env.PYTHON_BIN = '';
     const config = loadConfig();
-    assert.equal(config.minimumMoneylineEdge, 0.05);
+    assert.equal(config.minimumMoneylineEdge, 0.02);
     assert.equal(config.moneylineOddsMaxAgeMinutes, 10);
     assert.equal(config.pythonExecutable, 'python3');
 

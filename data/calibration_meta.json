@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "source": "CSV prediction_outcomes (chronological 80% train, 968/1210 rows)",
+  "source": "CSV prediction_outcomes (chronological 80% train, 1044/1306 rows)",
   "calibrated_markets": [
     "moneyline"
   ],
   "markets": {
     "moneyline": {
       "status": "success",
-      "samples": 968,
+      "samples": 1044,
       "bins": 8,
       "map_points": 4,
       "low_confidence_bins": false

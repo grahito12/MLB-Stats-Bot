@@ -49,6 +49,10 @@ Jangan pakai output sebagai guaranteed betting advice. Abaikan pick jika data li
 | Data quality and no-bet guardrails | Stable | Includes stale/missing data checks. |
 | Dashboard API auth, CORS, rate limiting | Stable | Set `DASHBOARD_API_TOKEN` in production. |
 | React dashboard | Experimental | Useful control center; verify API config before public exposure. |
+| Prediction Audit Card (dashboard + Telegram `/auditcard`) | Stable | Inspect one immutable prediction end-to-end; read-only. |
+| Immutable prediction history (`model_predictions`, snapshots) | Stable | Append-only; every prediction is reproducible. |
+| Shadow challenger models (`learned_v2_logistic`, `market_residual_v2`) | Experimental | `MLB_SHADOW_MODE` off by default; never affect picks. |
+| Chronological evaluation, OOF calibration, ablation, promotion reports | Experimental | Offline research tooling; no challenger promoted yet. |
 | Analyst/LLM layer | Experimental | Optional; should not override safety rules. |
 | Odds/weather enrichment | Experimental | Depends on optional provider keys. |
 | Evolution/audit learning engine | Experimental | Audit-first; promotion requires validation. |
@@ -537,6 +541,13 @@ GET /api/export/performance
 GET /api/export/backtest
 ```
 
+Prediction audit API:
+
+```text
+GET /api/predictions/audit                      list prediksi immutable (filter ?date=&limit=)
+GET /api/predictions/{prediction_id}/audit      payload audit ternormalisasi satu prediksi
+```
+
 Threshold bisa diubah dari tab `Settings`:
 
 - Minimum moneyline edge.
@@ -555,6 +566,54 @@ Catatan VPS:
 - Jangan buka port `8010/tcp` kecuali benar-benar ingin API diakses langsung.
 - Kalau hanya memakai Vite proxy dari frontend, browser cukup membuka port `5173`.
 - Di production, set `DASHBOARD_API_TOKEN` di backend; `VITE_DASHBOARD_API_TOKEN` hanya untuk pre-fill login saat development.
+
+## Model Lifecycle Dan Prediction Audit
+
+Bot ini tidak lagi sekadar `data -> heuristic -> pick`. Setiap prediksi produksi sekarang melewati jalur yang bisa diaudit:
+
+```text
+immutable snapshot
+  -> feature vector (frozen)
+  -> control model (heuristic_v1)
+  -> shadow challengers (opsional, tidak memengaruhi pick)
+  -> calibration (versioned)
+  -> decision (VALUE / LEAN ONLY / NO BET)
+  -> settlement + closing line (CLV)
+  -> chronological evaluation
+```
+
+Komponen utama:
+
+- **Immutable history**: setiap prediksi tercatat append-only di `model_predictions` (satu baris per run per model) dengan probabilitas raw/calibrated/display terpisah, versi model+fitur+kalibrasi, snapshot hash, dan status kelayakan promosi. Snapshot lengkap tersimpan di `data/prediction_snapshots/`.
+- **Market quote pairs**: odds home/away satu bookmaker disimpan dengan timestamp (`market_quote_pairs`); quote setelah first pitch ditandai ineligible. Opening dan closing dipisahkan — closing hanya untuk evaluasi/CLV, tidak pernah jadi input model.
+- **Shadow models**: `learned_v2_logistic` dan `market_residual_v2` bisa menilai snapshot yang sama dengan control (`MLB_SHADOW_MODE=true`, default off). Shadow tidak pernah mengubah pick, stake, Telegram, atau dashboard.
+- **Evaluasi kronologis**: train/validation/holdout berbasis tanggal (bukan random split), OOF calibration, ablation engine, dan promotion report berbasis bukti (`src/eval/`). Belum ada challenger yang dipromosikan; `heuristic_v1` tetap control.
+
+Dokumen terkait: `docs/PREDICTION_ARCHITECTURE.md`, `docs/CURRENT_MODEL_FORMULA.md`, `docs/EVALUATION_METHOD.md`, `docs/CALIBRATION_GOVERNANCE.md`, `docs/MODEL_GOVERNANCE.md`, `docs/REPLAY_ARCHITECTURE.md`, `docs/REMAINING_RISKS.md`.
+
+### Prediction Audit Card
+
+Setiap prediksi immutable bisa diinspeksi satu per satu — apa yang diketahui sistem saat itu, model mana yang menghasilkan probabilitas, kenapa BET/NO BET, dan apa hasilnya. Detail lengkap: [docs/PREDICTION_AUDIT_CARD.md](docs/PREDICTION_AUDIT_CARD.md).
+
+Tiga akses:
+
+- **Dashboard**: tab `Audit` — tabel prediksi immutable + kartu audit (bar probabilitas raw vs calibrated vs market no-vig, delta model−market, kontribusi fitur, data quality per input, alasan keputusan, hasil + CLV, identity + replay).
+- **API**: `GET /api/predictions/audit` (list) dan `GET /api/predictions/{prediction_id}/audit` (payload ternormalisasi).
+- **Telegram**: satu command untuk semuanya:
+
+```text
+/auditcard                     daftar prediksi immutable terbaru
+/auditcard 2026-08-20          daftar untuk tanggal tertentu
+/auditcard yankees             kartu audit lengkap untuk game tim itu
+/auditcard 2026-08-20 dodgers  kombinasi tanggal + tim
+```
+
+Prinsip audit card:
+
+- Tidak pernah mengarang data — field yang tidak terekam ditampilkan "tidak terekam" / "Not recorded".
+- Market saat prediksi hanya memakai quote dengan `fetched_at <= as_of` (anti temporal leakage); closing line ditampilkan terpisah.
+- Kontribusi fitur adalah dekomposisi exact dari formula produksi `heuristic_v1` — jumlah komponen sama dengan raw edge, diverifikasi.
+- Probabilitas raw, calibrated, dan market tidak pernah dicampur jadi satu angka.
 
 ## MLB Agent Evolution Engine
 
@@ -638,12 +697,12 @@ data/evolution/audit_reports.jsonl
 Telegram command utama untuk evolution:
 
 ```text
-/audit  diagnosis weakness, root cause, calibration issue, dan candidate priority
+/evolve  satu command full-otomatis: evaluasi, learn, propose, backtest (alias: /audit)
 ```
 
 Kamu tidak perlu menjalankan command evolution dari terminal VPS. Bot Telegram menjalankan module Python yang sesuai di background, lalu mengirim hasilnya kembali ke chat.
 
-Saat `/audit` dijalankan, bot akan merangkum:
+Saat `/evolve` dijalankan, bagian audit-nya akan merangkum:
 
 1. Weakest segments.
 2. Root cause dari language loss.
@@ -1123,10 +1182,12 @@ data/sample_lineups.csv
 data/sample_market_totals.csv
 ```
 
-Test Python:
+Test (JS + Python):
 
 ```bash
-python -m unittest discover -s tests
+npm test              # syntax check + node --test tests/*.js + pytest
+npm run test:js       # hanya JS tests
+npm run test:py       # hanya Python tests
 ```
 
 Catatan: ini bukan betting advice. MLB punya variance tinggi, dan probabilitas model bukan jaminan hasil.
@@ -1136,16 +1197,29 @@ Catatan: ini bukan betting advice. MLB punya variance tinggi, dan probabilitas m
 Menu command Telegram sengaja dibuat pendek. Command utama yang muncul hanya:
 
 ```text
+/picks
 /today
 /deep
 /game Yankees
+/ledger
+/shadow
+/auditcard
 /ask best 5 top pick for today
-/audit
+/evolve
 /linealerts off
 /linealerts status
 ```
 
-Command lama seperti `/predict`, `/memory`, `/postgame`, `/evolve`, `/linecheck`, dan `/agenttools` masih ada sebagai hidden/backward-compatible command, tetapi tidak ditampilkan di menu utama agar Telegram tetap bersih.
+Ringkasan command utama:
+
+- `/picks` — top pick model hari ini dengan confidence band, edge, dan risk warning (`/picks YYYY-MM-DD` untuk tanggal lain).
+- `/ledger` — rekap bet nyata: open, record, units P/L, ROI.
+- `/shadow` — paper ledger kandidat VALUE yang diblokir CLV gate.
+- `/auditcard` — audit satu prediksi immutable: model, probabilitas raw vs calibrated vs market, kontribusi fitur, data quality, alasan keputusan, hasil + CLV.
+- `/evolve` — satu command full-otomatis: evaluasi hasil final, belajar, propose, backtest (alias `/audit`).
+- `/analyze` — analisa edge, risk, value, dan no-bet slate hari ini.
+
+Command lama seperti `/predict`, `/memory`, `/postgame`, `/linecheck`, dan `/agenttools` masih ada sebagai hidden/backward-compatible command, tetapi tidak ditampilkan di menu utama agar Telegram tetap bersih.
 
 Kamu juga bisa langsung bertanya tanpa slash:
 
@@ -1160,7 +1234,8 @@ Integrasi tanpa command baru:
 - `/ask best 5 top pick for today` menampilkan tier `Strong Pick`, `Lean Only`, `Thin Lean`, atau `No Bet Risk`.
 - `/today` tetap ringkas, tetapi akan memberi `Late Watch` jika ada risiko besar seperti opener/bulk atau probable pitcher TBD.
 - `/deep` menampilkan `Late Watch` lebih lengkap: lineup belum confirmed, odds belum lengkap, market total belum tersedia, opener/bulk, atau pitcher TBD.
-- `/audit` menjadi pusat evaluasi: calibration, CLV, reason quality, confidence cap candidate, weakest segment, dan root cause.
+- `/evolve` menjadi pusat evaluasi: calibration, CLV, reason quality, confidence cap candidate, weakest segment, dan root cause.
+- `/auditcard` menjadi pusat inspeksi per-prediksi: apa yang diketahui sistem saat prediksi dibuat dan apa hasilnya.
 
 ## Contoh Output
 
@@ -1315,19 +1390,37 @@ Expected response:
 ```text
 src/index.js          Bot Telegram, scheduler, command handler
 src/dashboard.js      Web dashboard lokal untuk monitoring model, QC, backtest, dan knowledge
-src/mlb.js            Data MLB, baseline model, formatter alert
+src/mlb.js            Data MLB, baseline model, value engine, formatter alert
+src/core/             Pure prediction core: prediction_core.js (heuristic_v1),
+                      feature_vector.js, learned_v2_logistic.js, market_residual_v2.js,
+                      model_registry.js (shadow orchestrator), model_ids.js
+src/prediction_snapshot.js Immutable pre-game snapshot builder
+src/prediction_replay.js   Replay prediksi dari snapshot (parity check)
+src/prediction_audit.py    Backend Prediction Audit Card (normalized read-only audit)
+src/auditCard.js      Telegram /auditcard (JS port dari audit reader)
 src/lineMovement.js   Live odds line movement monitor dan Telegram alert
+src/clv_gate.js       Rolling CLV gate untuk VALUE bets
 src/llm.js            Analyst Agent local/external
-src/storage.js        Memory dan state
+src/storage.js        SQLite state + immutable history writer
+src/storage/migrations/ Migrasi SQL berurutan (prediction_runs, model_predictions,
+                      market_quote_pairs, shadow_ledger, append-only picks, folds)
 src/telegram.js       Telegram Bot API wrapper
 src/analystSkill.js   Analyst playbook prompt
+src/rule_engine.js    Interpreter declarative moneyline rules (JS)
+src/rule_engine.py    Interpreter declarative moneyline rules (Python)
+src/eval/             Evaluasi kronologis: metrics, baselines, compare_models,
+                      ablation, oof_calibration, recommend, generate_p7_reports
+src/dataset/          Builder dataset per-game untuk trainer offline
 src/features.py       Formula sabermetric Python
 src/model.py          Baseline prediction dan optional sklearn models
 src/totals.py         Total runs dan over/under probabilities
 src/backtest.py       Backtest moneyline/totals dan tulis predictions log
 src/evaluate.py       Evaluasi ROI, CLV, Brier, log loss, calibration
 src/calibration.py    Confidence/probability calibration helpers
-src/reports.py        Formatter report evaluasi
+src/calibration.js    Kalibrasi live JS (per-market mapping + artifact hash)
+src/dashboard_api.py  FastAPI backend dashboard (termasuk endpoint audit)
+src/dashboard_service.py Business logic dashboard
+dashboard-react/      Frontend React + Tailwind (termasuk tab Audit)
 src/data_collection.py Raw data collection layer
 src/feature_engineering_layer.py Clean model feature layer
 src/prediction_layer.py Deterministic moneyline/totals prediction layer
@@ -1346,12 +1439,16 @@ src/data_loader.py    Loader CSV lokal
 src/agent_tools.py    Tool layer untuk Agent context/prediction/explanation
 src/data_sources/     Optional pybaseball, MLB StatsAPI, Retrosheet, Statcast, odds, weather clients
 src/knowledge/        Local RAG-style baseball knowledge retriever
+src/evolution/        Evolution engine Python (lessons, gradients, candidates, promotion gate)
 docs/analyst-playbook.md
+docs/PREDICTION_AUDIT_CARD.md Cara inspeksi/reproduksi satu prediksi
 data/knowledge/       Sabermetric, prediction, betting, dan over/under knowledge files
+data/prediction_snapshots/ Immutable snapshot JSON per prediksi
+data/rules/moneyline_rules.json Katalog declarative moneyline rules
 data/predictions_log.csv Sample backtest prediction log
 .env.example          Template konfigurasi
 requirements.txt      Dependency Python opsional
-tests/                Unit tests Python
+tests/                Unit tests Python + JS (node --test)
 ```
 
 ## Data Sources

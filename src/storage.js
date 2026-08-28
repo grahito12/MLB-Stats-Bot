@@ -564,6 +564,11 @@ export class Storage {
         updated_at TEXT NOT NULL
       );
 
+      -- YRFI/NRFI market removed (Aug 18): this table is never written or read
+      -- anymore, but the CREATE must stay: applied migration 004 (checksum-
+      -- frozen) renames yrfi_results on every FRESH database, so dropping this
+      -- bootstrap DDL breaks new-DB initialization. 004 recreates the table
+      -- itself, so it exists in the final schema either way.
       CREATE TABLE IF NOT EXISTS yrfi_results (
         game_pk TEXT PRIMARY KEY,
         date_ymd TEXT NOT NULL,
@@ -659,7 +664,7 @@ export class Storage {
 
       CREATE INDEX IF NOT EXISTS idx_picks_date ON picks(date_ymd);
       CREATE INDEX IF NOT EXISTS idx_picks_post_game ON picks(post_game_processed);
-      CREATE INDEX IF NOT EXISTS idx_yrfi_date ON yrfi_results(date_ymd);
+      -- idx_yrfi_date dropped: yrfi_results table removed (moneyline-only).
       CREATE INDEX IF NOT EXISTS idx_bet_ledger_date ON bet_ledger(date_ymd);
       CREATE INDEX IF NOT EXISTS idx_bet_ledger_status ON bet_ledger(status);
       CREATE INDEX IF NOT EXISTS idx_line_snapshots_timestamp ON line_snapshots(timestamp);
@@ -826,7 +831,7 @@ export class Storage {
   replaceAllFromState(state) {
     const normalized = normalizeState(state);
     const replace = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM yrfi_results').run();
+      // yrfi_results table removed; nothing to delete for YRFI.
       this.db.prepare('DELETE FROM bet_ledger').run();
       this.db.prepare('DELETE FROM shadow_ledger').run();
       this.db.prepare('DELETE FROM pick_processing').run();

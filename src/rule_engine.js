@@ -94,6 +94,27 @@ export const JS_HANDLERS = {
     return { fired: false };
   },
 
+  // Away picks with low conviction underperform (edge analysis Aug 18).
+  // Blocks away picks with modelProbability < 56% unless edge is strong.
+  awayWeakConviction(ctx, params) {
+    const { option } = ctx;
+    if (option.side !== 'away') return { fired: false };
+    const minProb = toNumber(params.min_probability, 56);
+    const strongEdge = toNumber(params.strong_edge, 5.0);
+    const prob = toNumber(option.modelProbability, 0);
+    const edge = toNumber(option.edge, 0);
+    if (prob < minProb && edge < strongEdge) {
+      return {
+        fired: true,
+        tokens: {
+          prob: prob.toFixed(1),
+          floor: minProb
+        }
+      };
+    }
+    return { fired: false };
+  },
+
   // src/mlb.js:559-562 — pick must be the model's favored side.
   marketAgreement(ctx) {
     return { fired: ctx.option.side !== ctx.modelFavoredSide };
