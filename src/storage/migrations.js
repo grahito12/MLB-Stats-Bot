@@ -109,6 +109,20 @@ export function applyMigrations(db, options = {}) {
   const appliedNow = [];
   for (const migration of pending) {
     const run = db.transaction(() => {
+      // Concurrent processes (parallel test files on a fresh DB) can both see
+      // the migration as pending; the write lock serializes them, so re-check
+      // under the lock and skip if another process applied it meanwhile.
+      const existing = db
+        .prepare('SELECT checksum FROM schema_migrations WHERE id = ?')
+        .get(migration.id);
+      if (existing) {
+        if (existing.checksum !== migration.checksum) {
+          throw new Error(
+            `Migration checksum drift for ${migration.id}: stored=${existing.checksum} current=${migration.checksum}`
+          );
+        }
+        return false;
+      }
       if (migration.kind === 'sql') {
         db.exec(migration.sql);
       } else {
@@ -117,9 +131,15 @@ export function applyMigrations(db, options = {}) {
       db.prepare(
         `INSERT INTO schema_migrations (id, checksum, applied_at) VALUES (?, ?, ?)`
       ).run(migration.id, migration.checksum, new Date().toISOString());
+      return true;
     });
-    run();
-    appliedNow.push(migration.id);
+    // BEGIN IMMEDIATE takes the write lock up front so the re-check is
+    // race-free (deferred BEGIN would only lock at first write).
+    if (run.immediate()) {
+      appliedNow.push(migration.id);
+    } else {
+      skipped.push(migration.id);
+    }
   }
 
   return {

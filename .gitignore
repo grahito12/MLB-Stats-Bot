@@ -3,6 +3,9 @@
 node_modules/
 data/*.json
 !data/dashboard_mock.json
+# Calibration artifact is required by tests (test_calibration_js.js asserts
+# against this exact map) and by CI; it only changes via deliberate retrain.
+!data/calibration_maps.json
 data/*.db
 data/*.db-*
 data/*.sqlite
