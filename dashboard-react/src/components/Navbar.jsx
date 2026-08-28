@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { id: 'ledger', label: 'Ledger' },
   { id: 'backtest', label: 'Backtest' },
   { id: 'history', label: 'History' },
+  { id: 'audit', label: 'Audit' },
   { id: 'memory', label: 'Memory' },
   { id: 'telegram', label: 'Telegram' },
   { id: 'settings', label: 'Settings' },

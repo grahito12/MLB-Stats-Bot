@@ -10,6 +10,7 @@ import DataQualitySection from './components/DataQualitySection.jsx';
 import MemorySection from './components/MemorySection.jsx';
 import EvolutionView from './components/EvolutionView.jsx';
 import HistorySection from './components/HistorySection.jsx';
+import AuditSection from './components/AuditSection.jsx';
 import LedgerSection from './components/LedgerSection.jsx';
 import BacktestSection from './components/BacktestSection.jsx';
 import TelegramSection from './components/TelegramSection.jsx';
@@ -175,6 +176,13 @@ export default function App() {
       {activeTab === 'history' && (
         <div className="space-y-6 animate-fade-in">
           <HistorySection />
+        </div>
+      )}
+
+      {activeTab === 'audit' && (
+        <div className="space-y-6 animate-fade-in">
+          <h2 className="text-xl font-black uppercase tracking-tight text-ink">Prediction Audit</h2>
+          <AuditSection />
         </div>
       )}
 

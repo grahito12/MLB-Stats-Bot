@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .prediction_audit import get_prediction_audit, list_audit_predictions
 from .dashboard_service import (
     get_mock_backtest,
     get_bet_ledger,
@@ -240,6 +241,21 @@ def api_evolve() -> dict[str, Any]:
 def api_audit() -> dict[str, Any]:
     """Run ingest + audit pipeline (learn from history, apply safe guardrails)."""
     return run_audit_cycle()
+
+
+@app.get("/api/predictions/audit", dependencies=API_DEPENDENCIES)
+def api_audit_predictions(date: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """List immutable model predictions for the Prediction Audit Card selector."""
+    return list_audit_predictions(date_ymd=date, limit=limit)
+
+
+@app.get("/api/predictions/{prediction_id}/audit", dependencies=API_DEPENDENCIES)
+def api_prediction_audit(prediction_id: str) -> dict[str, Any]:
+    """Return the normalized audit payload for one immutable prediction."""
+    payload = get_prediction_audit(prediction_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Prediction {prediction_id} not found")
+    return payload
 
 
 @app.post("/api/backtest", dependencies=API_DEPENDENCIES)

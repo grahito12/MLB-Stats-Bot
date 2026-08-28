@@ -28,6 +28,7 @@ import { UI_LINE, UI_THIN_LINE, uiBullet, uiCommand, uiKV, uiSection, uiTitle } 
 import { dateInTimezone, isValidDateYmd, percent, timeInTimezone, weekdayInTimezone } from './utils.js';
 import { startDashboard } from './dashboard.js';
 import { formatLedgerReport } from './ledgerReport.js';
+import { handleAuditCardQuery } from './auditCard.js';
 import { formatShadowLedgerReport } from './shadowLedgerReport.js';
 import {
   attachCurrentOdds,
@@ -76,6 +77,8 @@ function helpText() {
     uiCommand('/predict YYYY-MM-DD', 'prediksi semua game pada tanggal tertentu'),
     uiCommand('/ledger', 'rekap bet nyata: open, record, units P/L, ROI'),
     uiCommand('/shadow', 'paper ledger kandidat VALUE yang diblokir CLV gate'),
+    uiCommand('/auditcard', 'audit prediksi immutable: model, probabilitas, market, alasan, hasil'),
+    uiCommand('/auditcard TEAM', 'audit card detail untuk satu game (bisa + YYYY-MM-DD)'),
     uiCommand('/analyze', 'analisa edge, risk, value, dan no-bet slate hari ini'),
     uiCommand('/analyze TEAM', 'analisa tim/game tertentu dari data bot'),
     uiCommand('/news', 'ringkas external MLB/ESPN/Yahoo context plus risk data bot'),
@@ -1903,6 +1906,16 @@ async function handleMessage(bot, message) {
       await bot.sendMessage(chatId, formatLedgerReport(rows, { clvGate: config.clvGate }));
     } finally {
       releaseCommandLock(chatId, 'ledger');
+    }
+    return;
+  }
+
+  if (command === '/auditcard') {
+    if (!acquireCommandLock(chatId, 'auditcard')) return;
+    try {
+      await bot.sendMessage(chatId, handleAuditCardQuery(storage.db, args.join(' ')));
+    } finally {
+      releaseCommandLock(chatId, 'auditcard');
     }
     return;
   }

@@ -77,6 +77,9 @@ export const api = {
   evolve: () => request('/api/evolve', { method: 'POST' }),
   // Backwards-compatible alias; the backend runs the same full pipeline.
   audit: () => request('/api/evolve', { method: 'POST' }),
+  auditPredictions: (params) => request(`/api/predictions/audit${queryString(params)}`),
+  predictionAudit: (predictionId) =>
+    request(`/api/predictions/${encodeURIComponent(predictionId)}/audit`),
   settings: () => request('/api/settings'),
   saveSettings: (payload) =>
     request('/api/settings', {
